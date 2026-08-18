@@ -150,6 +150,73 @@ func TestImmediateTimerPollSnapshot(t *testing.T) {
 	}
 }
 
+func TestSocketValidationRules(t *testing.T) {
+	imports := Imports(Config{})
+
+	unknownFamily := call(t, imports, "socket_open", []uint64{99, SockStream, ProtoTCP, 0}, 2)
+	if unknownFamily[0] != 0 || int32(unknownFamily[1]) != ErrInvalid {
+		t.Fatalf("unknown family = %v", unknownFamily)
+	}
+	unknownProtocol := call(t, imports, "socket_open", []uint64{AFInet4, SockStream, 99, 0}, 2)
+	if unknownProtocol[0] != 0 || int32(unknownProtocol[1]) != ErrInvalid {
+		t.Fatalf("unknown protocol = %v", unknownProtocol)
+	}
+	mismatch := call(t, imports, "socket_open", []uint64{AFInet4, SockStream, ProtoUDP, 0}, 2)
+	if mismatch[0] != 0 || int32(mismatch[1]) != ErrProtocol {
+		t.Fatalf("stream/udp mismatch = %v", mismatch)
+	}
+	if _, code := addressFromFields(AFInet4, 0, 0, math.MaxUint16+1, 0); code != ErrRange {
+		t.Fatalf("oversized port error = %d, want ERR_RANGE", code)
+	}
+
+	dgram := call(t, imports, "socket_open", []uint64{AFInet4, SockDgram, ProtoUDP, 0}, 2)
+	if dgram[0] == 0 || int32(dgram[1]) != ErrOK {
+		t.Fatalf("socket_open datagram = %v", dgram)
+	}
+	connectDgram := call(t, imports, "socket_connect", []uint64{dgram[0], AFInet4, 0, 0x7f000001, 9, 0}, 1)
+	if int32(connectDgram[0]) != ErrProtocol {
+		t.Fatalf("datagram connect = %v, want ERR_PROTOCOL", connectDgram)
+	}
+	_ = call(t, imports, "handle_close", []uint64{dgram[0]}, 1)
+}
+
+func TestSocketListenAndConnectedState(t *testing.T) {
+	imports := Imports(Config{})
+	server := call(t, imports, "socket_open", []uint64{AFInet4, SockStream, ProtoTCP, 0}, 2)
+	if server[0] == 0 || int32(server[1]) != ErrOK {
+		t.Fatalf("socket_open server = %v", server)
+	}
+	defer call(t, imports, "handle_close", []uint64{server[0]}, 1)
+
+	bind := call(t, imports, "socket_bind", []uint64{server[0], AFInet4, 0, 0x7f000001, 0, 0}, 1)
+	if int32(bind[0]) != ErrOK {
+		t.Fatalf("socket_bind = %v", bind)
+	}
+	if got := call(t, imports, "socket_listen", []uint64{server[0], 0}, 1); int32(got[0]) != ErrInvalid {
+		t.Fatalf("listen backlog zero = %v", got)
+	}
+	if got := call(t, imports, "socket_listen", []uint64{server[0], 1}, 1); int32(got[0]) != ErrOK {
+		t.Fatalf("socket_listen = %v", got)
+	}
+	local := call(t, imports, "socket_local_address", []uint64{server[0]}, 6)
+	if int32(local[5]) != ErrOK || local[3] == 0 {
+		t.Fatalf("socket_local_address = %v", local)
+	}
+
+	client := call(t, imports, "socket_open", []uint64{AFInet4, SockStream, ProtoTCP, 0}, 2)
+	if client[0] == 0 || int32(client[1]) != ErrOK {
+		t.Fatalf("socket_open client = %v", client)
+	}
+	defer call(t, imports, "handle_close", []uint64{client[0]}, 1)
+	remote := []uint64{client[0], AFInet4, 0, 0x7f000001, local[3], 0}
+	if got := call(t, imports, "socket_connect", remote, 1); int32(got[0]) != ErrOK {
+		t.Fatalf("socket_connect = %v", got)
+	}
+	if got := call(t, imports, "socket_connect", remote, 1); int32(got[0]) != ErrInvalid {
+		t.Fatalf("second socket_connect = %v, want ERR_INVALID", got)
+	}
+}
+
 func TestRepresentationDependentImportsAreAbsent(t *testing.T) {
 	imports := Imports(Config{})
 	for _, name := range []string{"fd_read_mem32", "fd_write_mem64", "random_fill_array_i8", "args_read_mem32_i8", "path_open_mem32_i8"} {
