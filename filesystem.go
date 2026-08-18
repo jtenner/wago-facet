@@ -56,6 +56,11 @@ func (p *Plugin) preopenNameLen(m wago.HostModule, params, results []uint64, wid
 	if len(params) != 2 || len(results) < 2 {
 		panic(wago.HostTrap{Err: errors.New("facet: fs_preopen_name_len host signature mismatch")})
 	}
+	wtf := int32(uint32(params[1]))
+	if !validWTF(wtf) {
+		results[1] = uint64(uint32(ErrInvalid))
+		return
+	}
 	state := p.stateFor(m)
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -64,7 +69,7 @@ func (p *Plugin) preopenNameLen(m wago.HostModule, params, results []uint64, wid
 		results[1] = uint64(uint32(ErrRange))
 		return
 	}
-	_, units, code := encodeText(state.cfg.Preopens[index].Guest, width, int32(uint32(params[1])))
+	_, units, code := encodeText(state.cfg.Preopens[index].Guest, width, wtf)
 	results[0] = units
 	results[1] = uint64(uint32(code))
 }
@@ -243,6 +248,11 @@ func (p *Plugin) fdSeekHost(m wago.HostModule, params, results []uint64) {
 	zeroResults(results)
 	if len(params) != 3 || len(results) < 2 {
 		panic(wago.HostTrap{Err: errors.New("facet: fd_seek host signature mismatch")})
+	}
+	whence := int32(uint32(params[2]))
+	if whence != SeekSet && whence != SeekCur && whence != SeekEnd {
+		results[1] = uint64(uint32(ErrInvalid))
+		return
 	}
 	state := p.stateFor(m)
 	state.mu.Lock()
@@ -439,17 +449,17 @@ func (p *Plugin) dirIterNextLen(m wago.HostModule, params, results []uint64, wid
 	if len(params) != 2 || len(results) < 5 {
 		panic(wago.HostTrap{Err: errors.New("facet: dir_iter_next_len host signature mismatch")})
 	}
+	wtf := int32(uint32(params[1]))
+	if !validWTF(wtf) {
+		results[4] = uint64(uint32(ErrInvalid))
+		return
+	}
 	state := p.stateFor(m)
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	iter, code := getIterator(state, uint32(params[0]))
 	if code != ErrOK {
 		results[4] = uint64(uint32(code))
-		return
-	}
-	wtf := int32(uint32(params[1]))
-	if wtf != 0 && wtf != 1 {
-		results[4] = uint64(uint32(ErrInvalid))
 		return
 	}
 	snap, code := snapshotDirEntry(iter)
