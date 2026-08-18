@@ -1,10 +1,9 @@
 name: Bootstrap initial Facet plugin
 
 on:
-  push:
-    branches: [initial-facet-plugin]
-    paths:
-      - ".bootstrap/trigger"
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
 
 permissions:
   contents: write
@@ -17,6 +16,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.head_ref }}
       - uses: actions/setup-go@v6
         with:
           go-version: "1.23.x"
@@ -55,4 +55,4 @@ jobs:
           git add -A
           git diff --cached --quiet && exit 0
           git commit -m "feat: implement initial Facet plugin"
-          git push origin HEAD:initial-facet-plugin
+          git push origin HEAD:${{ github.head_ref }}
