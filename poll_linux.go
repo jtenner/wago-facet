@@ -68,6 +68,11 @@ func (p *Plugin) pollAddFDHost(m wago.HostModule, params, results []uint64) {
 	if len(params) != 4 || len(results) < 1 {
 		panic(wago.HostTrap{Err: errors.New("facet: poll_add_fd host signature mismatch")})
 	}
+	events := uint32(params[2])
+	if !validPollInterest(events) {
+		results[0] = uint64(uint32(ErrInvalid))
+		return
+	}
 	state := p.stateFor(m)
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -80,11 +85,6 @@ func (p *Plugin) pollAddFDHost(m wago.HostModule, params, results []uint64) {
 	h, code := state.get(fd)
 	if code != ErrOK || !h.isFD() {
 		results[0] = uint64(uint32(ErrBadHandle))
-		return
-	}
-	events := uint32(params[2])
-	if !validPollInterest(events) {
-		results[0] = uint64(uint32(ErrInvalid))
 		return
 	}
 	if _, exists := poll.regs[fd]; exists {
@@ -100,6 +100,11 @@ func (p *Plugin) pollUpdateFDHost(m wago.HostModule, params, results []uint64) {
 	if len(params) != 4 || len(results) < 1 {
 		panic(wago.HostTrap{Err: errors.New("facet: poll_update_fd host signature mismatch")})
 	}
+	events := uint32(params[2])
+	if !validPollInterest(events) {
+		results[0] = uint64(uint32(ErrInvalid))
+		return
+	}
 	state := p.stateFor(m)
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -109,17 +114,12 @@ func (p *Plugin) pollUpdateFDHost(m wago.HostModule, params, results []uint64) {
 		return
 	}
 	fd := uint32(params[1])
-	if _, exists := poll.regs[fd]; !exists {
-		results[0] = uint64(uint32(ErrNoEntry))
-		return
-	}
 	if h, code := state.get(fd); code != ErrOK || !h.isFD() {
 		results[0] = uint64(uint32(ErrBadHandle))
 		return
 	}
-	events := uint32(params[2])
-	if !validPollInterest(events) {
-		results[0] = uint64(uint32(ErrInvalid))
+	if _, exists := poll.regs[fd]; !exists {
+		results[0] = uint64(uint32(ErrNoEntry))
 		return
 	}
 	poll.regs[fd] = pollRegistration{events: events, userdata: params[3]}
@@ -140,6 +140,10 @@ func (p *Plugin) pollRemoveFDHost(m wago.HostModule, params, results []uint64) {
 		return
 	}
 	fd := uint32(params[1])
+	if h, code := state.get(fd); code != ErrOK || !h.isFD() {
+		results[0] = uint64(uint32(ErrBadHandle))
+		return
+	}
 	if _, exists := poll.regs[fd]; !exists {
 		results[0] = uint64(uint32(ErrNoEntry))
 		return
