@@ -1,0 +1,58 @@
+name: Bootstrap initial Facet plugin
+
+on:
+  push:
+    branches: [initial-facet-plugin]
+    paths:
+      - ".bootstrap/trigger"
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.23.x"
+
+      - name: Verify and unpack source archive
+        shell: bash
+        run: |
+          cat .bootstrap/chunk-00 .bootstrap/chunk-01 .bootstrap/chunk-02 .bootstrap/chunk-03 .bootstrap/chunk-04 > /tmp/wago-facet.b64
+          echo "cc91b9aba6c1094ecd7ff898bcd42f4a88b1f92d1bda1dd002f541b9bbaa9496  /tmp/wago-facet.b64" | sha256sum --check
+          base64 --decode /tmp/wago-facet.b64 > /tmp/wago-facet.tgz
+          echo "e6eb30e1b59af80f60a2e9340bd54ea22573f727a3bab5e7628fa8ee5f9cd365  /tmp/wago-facet.tgz" | sha256sum --check
+          tar -xzf /tmp/wago-facet.tgz -C .
+          rm -rf .bootstrap
+
+      - name: Pin current Wago and normalize module metadata
+        shell: bash
+        run: |
+          go mod edit -droprequire=github.com/wago-org/wago || true
+          go get github.com/wago-org/wago@2f1f54faa62a6bf2a4ffe0b404f1102e19b2c7a6
+          go mod tidy
+
+      - name: Format
+        run: gofmt -w .
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Commit validated plugin
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "feat: implement initial Facet plugin"
+          git push origin HEAD:initial-facet-plugin
