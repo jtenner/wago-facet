@@ -14,8 +14,10 @@ const (
 	textI32
 )
 
+func validWTF(wtf int32) bool { return wtf == 0 || wtf == 1 }
+
 func encodeText(value string, width textWidth, wtf int32) ([]byte, uint64, int32) {
-	if wtf != 0 && wtf != 1 {
+	if !validWTF(wtf) {
 		return nil, 0, ErrInvalid
 	}
 	if wtf == 0 && !utf8.ValidString(value) {
