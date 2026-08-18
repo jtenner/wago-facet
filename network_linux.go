@@ -70,15 +70,23 @@ func socketDomain(family int32) (int, bool) {
 func socketTypeAndProtocol(stype, protocol int32) (int, int, int32) {
 	switch stype {
 	case SockStream:
-		if protocol != ProtoDefault && protocol != ProtoTCP {
+		switch protocol {
+		case ProtoDefault, ProtoTCP:
+			return unix.SOCK_STREAM, unix.IPPROTO_TCP, ErrOK
+		case ProtoUDP:
 			return 0, 0, ErrProtocol
+		default:
+			return 0, 0, ErrInvalid
 		}
-		return unix.SOCK_STREAM, unix.IPPROTO_TCP, ErrOK
 	case SockDgram:
-		if protocol != ProtoDefault && protocol != ProtoUDP {
+		switch protocol {
+		case ProtoDefault, ProtoUDP:
+			return unix.SOCK_DGRAM, unix.IPPROTO_UDP, ErrOK
+		case ProtoTCP:
 			return 0, 0, ErrProtocol
+		default:
+			return 0, 0, ErrInvalid
 		}
-		return unix.SOCK_DGRAM, unix.IPPROTO_UDP, ErrOK
 	default:
 		return 0, 0, ErrInvalid
 	}
@@ -86,7 +94,7 @@ func socketTypeAndProtocol(stype, protocol int32) (int, int, int32) {
 
 func addressFromFields(family int32, hi, lo uint64, port, scope uint32) (socketAddress, int32) {
 	if port > math.MaxUint16 {
-		return socketAddress{}, ErrAddressInvalid
+		return socketAddress{}, ErrRange
 	}
 	a := socketAddress{family: family, hi: hi, lo: lo, port: uint16(port), scope: scope}
 	switch family {
@@ -153,7 +161,7 @@ func (p *Plugin) socketOpenHost(m wago.HostModule, params, results []uint64) {
 	}
 	domain, ok := socketDomain(family)
 	if !ok {
-		results[1] = uint64(uint32(ErrAddressInvalid))
+		results[1] = uint64(uint32(ErrInvalid))
 		return
 	}
 	osType, osProto, code := socketTypeAndProtocol(stype, protocol)
@@ -250,15 +258,15 @@ func (p *Plugin) socketConnectHost(m wago.HostModule, params, results []uint64) 
 		return
 	}
 	code = p.withSocket(m, params[0], func(_ *instanceState, _ uint32, _ *handleEntry, sock *socketResource) int32 {
+		if sock.stype != SockStream {
+			return ErrProtocol
+		}
 		if address.family != sock.family {
 			return ErrAddressInvalid
 		}
 		switch sock.state {
-		case socketConnected:
-			if sock.hasPending && sameAddress(sock.pending, address) {
-				return ErrOK
-			}
-			return ErrBusy
+		case socketConnected, socketListening:
+			return ErrInvalid
 		case socketConnecting:
 			if !sock.hasPending || !sameAddress(sock.pending, address) {
 				return ErrBusy
@@ -269,6 +277,7 @@ func (p *Plugin) socketConnectHost(m wago.HostModule, params, results []uint64) 
 			}
 			if soerr == 0 {
 				sock.state = socketConnected
+				sock.hasPending = false
 				return ErrOK
 			}
 			e := syscall.Errno(soerr)
@@ -276,11 +285,10 @@ func (p *Plugin) socketConnectHost(m wago.HostModule, params, results []uint64) 
 				return ErrAgain
 			}
 			sock.state = socketFailed
+			sock.hasPending = false
 			return errorCode(e)
 		case socketFailed:
 			return ErrNotConnected
-		case socketListening:
-			return ErrInvalid
 		}
 		sa, err := address.sockaddr()
 		if err != nil {
@@ -289,8 +297,7 @@ func (p *Plugin) socketConnectHost(m wago.HostModule, params, results []uint64) 
 		err = unix.Connect(sock.fd, sa)
 		if err == nil || errors.Is(err, syscall.EISCONN) {
 			sock.state = socketConnected
-			sock.pending = address
-			sock.hasPending = true
+			sock.hasPending = false
 			return ErrOK
 		}
 		if sock.nonblock && (errors.Is(err, syscall.EINPROGRESS) || errors.Is(err, syscall.EALREADY) || errors.Is(err, syscall.EAGAIN)) {
@@ -301,7 +308,7 @@ func (p *Plugin) socketConnectHost(m wago.HostModule, params, results []uint64) 
 		}
 		sock.state = socketFailed
 		sock.pending = address
-		sock.hasPending = true
+		sock.hasPending = false
 		return errorCode(err)
 	})
 	results[0] = uint64(uint32(code))
@@ -313,9 +320,12 @@ func (p *Plugin) socketListenHost(m wago.HostModule, params, results []uint64) {
 		panic(wago.HostTrap{Err: errors.New("facet: socket_listen host signature mismatch")})
 	}
 	backlog := uint32(params[1])
-	if backlog > math.MaxInt32 {
+	if backlog == 0 {
 		results[0] = uint64(uint32(ErrInvalid))
 		return
+	}
+	if backlog > math.MaxInt32 {
+		backlog = math.MaxInt32
 	}
 	code := p.withSocket(m, params[0], func(_ *instanceState, _ uint32, _ *handleEntry, sock *socketResource) int32 {
 		if sock.stype != SockStream {
