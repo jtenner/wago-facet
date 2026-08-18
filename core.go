@@ -91,6 +91,11 @@ func (p *Plugin) argsLen(m wago.HostModule, params, results []uint64, width text
 	if len(params) != 2 || len(results) < 2 {
 		panic(wago.HostTrap{Err: errors.New("facet: args_len host signature mismatch")})
 	}
+	wtf := int32(uint32(params[1]))
+	if !validWTF(wtf) {
+		results[1] = uint64(uint32(ErrInvalid))
+		return
+	}
 	state := p.stateFor(m)
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -99,7 +104,7 @@ func (p *Plugin) argsLen(m wago.HostModule, params, results []uint64, width text
 		results[1] = uint64(uint32(ErrRange))
 		return
 	}
-	_, units, code := encodeText(state.cfg.Args[index], width, int32(uint32(params[1])))
+	_, units, code := encodeText(state.cfg.Args[index], width, wtf)
 	results[0] = units
 	results[1] = uint64(uint32(code))
 }
@@ -149,6 +154,16 @@ func (p *Plugin) envLen(m wago.HostModule, params, results []uint64, width textW
 	if len(params) != 3 || len(results) < 2 {
 		panic(wago.HostTrap{Err: errors.New("facet: env_len host signature mismatch")})
 	}
+	field := int32(uint32(params[1]))
+	if field != EnvName && field != EnvValue {
+		results[1] = uint64(uint32(ErrInvalid))
+		return
+	}
+	wtf := int32(uint32(params[2]))
+	if !validWTF(wtf) {
+		results[1] = uint64(uint32(ErrInvalid))
+		return
+	}
 	state := p.stateFor(m)
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -157,12 +172,12 @@ func (p *Plugin) envLen(m wago.HostModule, params, results []uint64, width textW
 		results[1] = uint64(uint32(ErrRange))
 		return
 	}
-	value, code := environmentField(state.cfg.Env[index], int32(uint32(params[1])))
+	value, code := environmentField(state.cfg.Env[index], field)
 	if code != ErrOK {
 		results[1] = uint64(uint32(code))
 		return
 	}
-	_, units, code := encodeText(value, width, int32(uint32(params[2])))
+	_, units, code := encodeText(value, width, wtf)
 	results[0] = units
 	results[1] = uint64(uint32(code))
 }
