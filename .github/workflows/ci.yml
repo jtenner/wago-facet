@@ -1,0 +1,30 @@
+name: wago-facet CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.23.x"
+      - name: Download modules
+        run: go mod download
+      - name: Check formatting
+        shell: bash
+        run: |
+          files=$(gofmt -l .)
+          test -z "$files" || { printf 'gofmt required:\n%s\n' "$files"; exit 1; }
+      - name: Test
+        run: go test ./...
+      - name: Vet
+        run: go vet ./...
