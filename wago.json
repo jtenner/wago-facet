@@ -1,0 +1,21 @@
+{
+  "$schema": "https://wago.sh/v1/schema.json",
+  "package": {
+    "module": "github.com/jtenner/wago-facet",
+    "version": "0.1.0",
+    "name": "Facet",
+    "description": "Facet 0.1 portable system interface for Core WebAssembly on Wago.",
+    "stability": "experimental",
+    "license": "MIT",
+    "homepage": "https://github.com/jtenner/wago-facet",
+    "repository": "https://github.com/jtenner/wago-facet",
+    "category": "system-interface",
+    "tags": ["facet", "system-interface", "core-wasm", "filesystem", "sockets", "poll"],
+    "authors": [{ "name": "Joshua Tenner", "github": "jtenner" }],
+    "engines": {
+      "wago": ">=0.1.0",
+      "go": ">=1.22"
+    },
+    "platforms": ["linux/amd64", "linux/arm64"]
+  }
+}
