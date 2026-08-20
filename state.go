@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	wago "github.com/wago-org/wago"
+	"golang.org/x/sys/unix"
 )
 
 type handleKind uint8
@@ -16,9 +17,11 @@ const (
 	handleStdout
 	handleStderr
 	handlePreopen
+	handleFile
 	handleIterator
 	handleSocket
 	handlePoll
+	handleResolver
 )
 
 type handleEntry struct {
@@ -27,9 +30,11 @@ type handleEntry struct {
 	flags  uint32
 	stdio  *stdioResource
 	pre    *Preopen
+	file   *fileResource
 	iter   *dirIterator
 	sock   *socketResource
 	poll   *pollSet
+	dns    *dnsResolver
 }
 
 func (h *handleEntry) isFD() bool {
@@ -37,7 +42,7 @@ func (h *handleEntry) isFD() bool {
 		return false
 	}
 	switch h.kind {
-	case handleStdin, handleStdout, handleStderr, handlePreopen, handleSocket:
+	case handleStdin, handleStdout, handleStderr, handlePreopen, handleFile, handleSocket:
 		return true
 	default:
 		return false
@@ -50,6 +55,9 @@ func (h *handleEntry) close() error {
 	}
 	if h.sock != nil {
 		return h.sock.close()
+	}
+	if h.file != nil {
+		return h.file.close()
 	}
 	return nil
 }
@@ -202,11 +210,23 @@ func (s *instanceState) preopen(index uint32) (uint32, int32) {
 		s.preopenIDs[index] = 0
 	}
 	p := &s.cfg.Preopens[index]
-	id, code := s.alloc(&handleEntry{kind: handlePreopen, rights: p.Rights, pre: p})
-	if code == ErrOK {
-		s.preopenIDs[index] = id
+	fd, err := unix.Open(p.Host, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return 0, errorCode(err)
 	}
-	return id, code
+	entry := &handleEntry{
+		kind:   handlePreopen,
+		rights: p.Rights,
+		pre:    p,
+		file:   &fileResource{fd: fd, directory: true},
+	}
+	id, code := s.alloc(entry)
+	if code != ErrOK {
+		_ = unix.Close(fd)
+		return 0, code
+	}
+	s.preopenIDs[index] = id
+	return id, ErrOK
 }
 
 func (s *instanceState) removeFDFromPollSets(fd uint32) {
