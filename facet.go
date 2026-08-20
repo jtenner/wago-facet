@@ -74,6 +74,11 @@ func Definition() wago.PluginDefinition {
 				Mode:   wago.AuthorityRequired,
 				Reason: "release Facet resources when their guest instance closes",
 			},
+			{
+				Name:   wago.AuthorityInstanceInstantiateIntercept,
+				Mode:   wago.AuthorityOptional,
+				Reason: "validate caller-selected concrete GC-array result storage before instantiation",
+			},
 		},
 		ConfigSchema: ConfigSchema(),
 	}
@@ -128,6 +133,20 @@ func (p *Plugin) Register(reg *wago.Registrar) error {
 	}); err != nil {
 		return err
 	}
+
+	allocatingTextEnabled := reg.Granted(wago.AuthorityInstanceInstantiateIntercept)
+	if allocatingTextEnabled {
+		instantiate, err := reg.InstanceInstantiateInterceptor()
+		if err != nil {
+			return err
+		}
+		if err := instantiate.Before(func(request wago.InstantiationRequest) error {
+			return validateAllocatingTextImports(request.Module)
+		}); err != nil {
+			return err
+		}
+	}
+
 	imports, err := reg.HostImports()
 	if err != nil {
 		return err
@@ -144,6 +163,9 @@ func (p *Plugin) Register(reg *wago.Registrar) error {
 	allBindings := append(p.bindings(), p.guestStorageBindings()...)
 	allBindings = append(allBindings, p.fdIOBindings()...)
 	allBindings = append(allBindings, p.datagramBindings()...)
+	if allocatingTextEnabled {
+		allBindings = append(allBindings, p.allocatingTextBindings()...)
+	}
 	for _, b := range allBindings {
 		module.Func(b.name, b.fn).Params(b.params...).Results(b.results...).Capability(b.cap).Docs(b.docs)
 	}
