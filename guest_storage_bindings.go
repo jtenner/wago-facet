@@ -6,7 +6,7 @@ func (p *Plugin) guestStorageBindings() []binding {
 	i32 := wago.ValI32
 	i64 := wago.ValI64
 	anyref := wago.ValAnyRef
-	bindings := make([]binding, 0, 43)
+	bindings := make([]binding, 0, 57)
 
 	for _, spec := range []struct {
 		suffix string
@@ -44,5 +44,6 @@ func (p *Plugin) guestStorageBindings() []binding {
 		binding{"random_fill_array_i64", p.randomFillArrayHost(wago.GuestGCArrayI64), []wago.ValType{anyref, i64, i64}, []wago.ValType{i64, i32}, CapRandomRead, "fill a mutable i64 GC-array byte range with cryptographic randomness"},
 		binding{"random_fill_array_v128", p.randomFillArrayHost(wago.GuestGCArrayV128), []wago.ValType{anyref, i64, i64}, []wago.ValType{i64, i32}, CapRandomRead, "fill a mutable v128 GC-array byte range with cryptographic randomness"},
 	)
+	bindings = append(bindings, p.fdIOBindings()...)
 	return bindings
 }
