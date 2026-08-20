@@ -117,16 +117,17 @@ func (p *Plugin) fdMemoryIOHost(op fdIOOperation, addressType wago.GuestMemoryAd
 		}
 		transferred, code := p.withSequentialFD(m, params[0], op, func(h *handleEntry) (uint64, int32) {
 			var n uint64
-			code := memoryRange(m, addressType, memoryIndex, pointer, length, access, func(buf []byte) int32 {
+			var ioCode int32
+			rangeCode := memoryRange(m, addressType, memoryIndex, pointer, length, access, func(buf []byte) int32 {
 				if op == fdIORead {
-					n, code = readSequentialFD(h, buf)
+					n, ioCode = readSequentialFD(h, buf)
 				} else {
-					n, code = writeSequentialFD(h, buf)
+					n, ioCode = writeSequentialFD(h, buf)
 				}
-				return code
+				return ioCode
 			})
-			if code != ErrOK {
-				return 0, code
+			if rangeCode != ErrOK {
+				return 0, rangeCode
 			}
 			return n, ErrOK
 		})
@@ -148,16 +149,17 @@ func (p *Plugin) fdArrayIOHost(op fdIOOperation, storageClass wago.GuestGCArrayS
 		}
 		transferred, code := p.withSequentialFD(m, params[0], op, func(h *handleEntry) (uint64, int32) {
 			var n uint64
-			code := arrayRange(m, params[1], storageClass, params[2], params[3], access, func(buf []byte) int32 {
+			var ioCode int32
+			rangeCode := arrayRange(m, params[1], storageClass, params[2], params[3], access, func(buf []byte) int32 {
 				if op == fdIORead {
-					n, code = readSequentialFD(h, buf)
+					n, ioCode = readSequentialFD(h, buf)
 				} else {
-					n, code = writeSequentialFD(h, buf)
+					n, ioCode = writeSequentialFD(h, buf)
 				}
-				return code
+				return ioCode
 			})
-			if code != ErrOK {
-				return 0, code
+			if rangeCode != ErrOK {
+				return 0, rangeCode
 			}
 			return n, ErrOK
 		})
