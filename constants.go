@@ -81,6 +81,29 @@ const (
 )
 
 const (
+	OpenCreate uint32 = 1 << iota
+	OpenExclusive
+	OpenTruncate
+	OpenDirectory
+	OpenNoFollow
+	OpenAppend
+	OpenNonblock
+)
+
+const PathFollowSymlink uint32 = 1 << 0
+
+const (
+	RemoveFile uint32 = 1 << iota
+	RemoveDirectory
+)
+
+const (
+	RenameReplace uint32 = 1 << iota
+	RenameNoReplace
+	RenameExchange
+)
+
+const (
 	SeekSet int32 = iota
 	SeekCur
 	SeekEnd
