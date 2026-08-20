@@ -141,7 +141,8 @@ func (p *Plugin) Register(reg *wago.Registrar) error {
 			return err
 		}
 	}
-	for _, b := range p.bindings() {
+	allBindings := append(p.bindings(), p.guestStorageBindings()...)
+	for _, b := range allBindings {
 		module.Func(b.name, b.fn).Params(b.params...).Results(b.results...).Capability(b.cap).Docs(b.docs)
 	}
 	return reg.Lifecycle(wago.PluginLifecycle{Start: p.start, Stop: p.stop})
@@ -204,8 +205,10 @@ func (p *Plugin) monotonicNow() uint64 {
 }
 
 // Imports returns one low-level, single-instance Facet import bundle. It does
-// not participate in Wago plugin policy or lifecycle. Call Imports separately
-// for every guest instance.
+// not participate in Wago plugin policy or lifecycle. Callback-scoped indexed
+// memory and GC-array imports are intentionally available only through Provider,
+// because a static HostModule cannot supply Wago's GuestStorageHostModule view.
+// Call Imports separately for every guest instance.
 func Imports(cfg Config) wago.Imports {
 	cfg = normalizeConfig(cfg)
 	p := &Plugin{cfg: cfg, raw: newInstanceState(cfg), clockBase: time.Now()}
