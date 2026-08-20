@@ -129,7 +129,8 @@ func (p *Plugin) argsReadAllocatedArrayHost(width textWidth) wago.HostFunc {
 		}
 		value := state.cfg.Args[index]
 		state.mu.Unlock()
-		results[0], code := allocateTextArray(m, value, width, wtf)
+		token, code := allocateTextArray(m, value, width, wtf)
+		results[0] = token
 		results[1] = uint64(uint32(code))
 	}
 }
@@ -190,7 +191,8 @@ func (p *Plugin) preopenNameReadAllocatedArrayHost(width textWidth) wago.HostFun
 		}
 		value := state.cfg.Preopens[index].Guest
 		state.mu.Unlock()
-		results[0], code := allocateTextArray(m, value, width, wtf)
+		token, code := allocateTextArray(m, value, width, wtf)
+		results[0] = token
 		results[1] = uint64(uint32(code))
 	}
 }
