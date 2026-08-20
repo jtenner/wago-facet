@@ -143,6 +143,7 @@ func (p *Plugin) Register(reg *wago.Registrar) error {
 	}
 	allBindings := append(p.bindings(), p.guestStorageBindings()...)
 	allBindings = append(allBindings, p.fdIOBindings()...)
+	allBindings = append(allBindings, p.datagramBindings()...)
 	for _, b := range allBindings {
 		module.Func(b.name, b.fn).Params(b.params...).Results(b.results...).Capability(b.cap).Docs(b.docs)
 	}
