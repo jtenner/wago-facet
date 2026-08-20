@@ -33,7 +33,7 @@ func TestDatagramMemoryValidationPrecedesReceiveAndReportsTruncation(t *testing.
 	}
 	local := make([]uint64, 6)
 	p.socketLocalAddressHost(m, []uint64{receiver}, local)
-	if int32(local[5]) != ErrOK || local[4] == 0 {
+	if int32(local[5]) != ErrOK || local[3] == 0 {
 		t.Fatalf("socket_local_address = %v", local)
 	}
 
