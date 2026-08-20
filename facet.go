@@ -162,9 +162,15 @@ func (p *Plugin) Register(reg *wago.Registrar) error {
 	}
 	allBindings := append(p.bindings(), p.guestStorageBindings()...)
 	allBindings = append(allBindings, p.fdIOBindings()...)
+	allBindings = append(allBindings, p.positionalBindings()...)
+	allBindings = append(allBindings, p.vectoredBindings()...)
+	allBindings = append(allBindings, p.pathBindings()...)
+	allBindings = append(allBindings, p.linkBindings()...)
 	allBindings = append(allBindings, p.datagramBindings()...)
+	allBindings = append(allBindings, p.dnsBindings()...)
 	if allocatingTextEnabled {
 		allBindings = append(allBindings, p.allocatingTextBindings()...)
+		allBindings = append(allBindings, p.allocatingReadlinkBindings()...)
 	}
 	for _, b := range allBindings {
 		module.Func(b.name, b.fn).Params(b.params...).Results(b.results...).Capability(b.cap).Docs(b.docs)
