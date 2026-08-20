@@ -49,25 +49,25 @@ func (m *fakeGCArrayAllocatorModule) NewGCArrayResult(_ int, length uint32, init
 
 func TestDefinedTextArrayMatchesStorageClass(t *testing.T) {
 	if !definedTextArrayMatches(wago.DefinedTypeDescriptor{
-		Kind: wago.CompositeTypeArray,
+		Kind:  wago.CompositeTypeArray,
 		Array: wago.FieldTypeDescriptor{Storage: wago.StorageTypeDescriptor{Packed: true, PackedType: wago.PackedTypeI8}},
 	}, textI8) {
 		t.Fatal("packed i8 array did not match i8 text")
 	}
 	if !definedTextArrayMatches(wago.DefinedTypeDescriptor{
-		Kind: wago.CompositeTypeArray,
+		Kind:  wago.CompositeTypeArray,
 		Array: wago.FieldTypeDescriptor{Storage: wago.StorageTypeDescriptor{Packed: true, PackedType: wago.PackedTypeI16}},
 	}, textI16) {
 		t.Fatal("packed i16 array did not match i16 text")
 	}
 	if !definedTextArrayMatches(wago.DefinedTypeDescriptor{
-		Kind: wago.CompositeTypeArray,
+		Kind:  wago.CompositeTypeArray,
 		Array: wago.FieldTypeDescriptor{Storage: wago.StorageTypeDescriptor{Value: wago.ValueTypeDescriptor{Kind: wago.ValueTypeI32}}},
 	}, textI32) {
 		t.Fatal("i32 array did not match i32 text")
 	}
 	if definedTextArrayMatches(wago.DefinedTypeDescriptor{
-		Kind: wago.CompositeTypeArray,
+		Kind:  wago.CompositeTypeArray,
 		Array: wago.FieldTypeDescriptor{Storage: wago.StorageTypeDescriptor{Value: wago.ValueTypeDescriptor{Kind: wago.ValueTypeI64}}},
 	}, textI32) {
 		t.Fatal("i64 array unexpectedly matched i32 text")
