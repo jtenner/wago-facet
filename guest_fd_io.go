@@ -26,7 +26,7 @@ func validateSequentialFD(h *handleEntry, op fdIOOperation) int32 {
 	if h.rights&right == 0 {
 		return ErrCapability
 	}
-	if h.pre != nil {
+	if h.file != nil && h.file.directory {
 		return ErrIsDirectory
 	}
 	if h.sock != nil {
@@ -58,6 +58,9 @@ func readSequentialFD(h *handleEntry, buf []byte) (uint64, int32) {
 	case h.stdio != nil && h.stdio.reader != nil:
 		n, err := h.stdio.reader.Read(buf)
 		return normalizeStreamResult(n, err)
+	case h.file != nil:
+		n, err := unix.Read(h.file.fd, buf)
+		return normalizeStreamResult(n, err)
 	case h.sock != nil:
 		n, err := unix.Read(h.sock.fd, buf)
 		return normalizeStreamResult(n, err)
@@ -73,6 +76,9 @@ func writeSequentialFD(h *handleEntry, buf []byte) (uint64, int32) {
 	switch {
 	case h.stdio != nil && h.stdio.writer != nil:
 		n, err := h.stdio.writer.Write(buf)
+		return normalizeStreamResult(n, err)
+	case h.file != nil:
+		n, err := unix.Write(h.file.fd, buf)
 		return normalizeStreamResult(n, err)
 	case h.sock != nil:
 		n, err := unix.Write(h.sock.fd, buf)
