@@ -121,7 +121,7 @@ func copyTextToArray(m wago.HostModule, value string, width textWidth, wtf int32
 
 	code = withGuestStorage(m, func(storage wago.GuestStorage) int32 {
 		ref, err := storage.GCRef(slot)
-		if err != nil || ref.IsNull() {
+		if err != nil {
 			return ErrType
 		}
 		info, err := storage.GCArrayInfo(ref)
@@ -172,7 +172,7 @@ func memoryRange(m wago.HostModule, addressType wago.GuestMemoryAddressType, mem
 func arrayRange(m wago.HostModule, slot uint64, expectedStorage wago.GuestGCArrayStorage, byteOffset, byteLength uint64, access wago.GuestStorageAccess, fn func([]byte) int32) int32 {
 	return withGuestStorage(m, func(storage wago.GuestStorage) int32 {
 		ref, err := storage.GCRef(slot)
-		if err != nil || ref.IsNull() {
+		if err != nil {
 			return ErrType
 		}
 		info, err := storage.GCArrayInfo(ref)
