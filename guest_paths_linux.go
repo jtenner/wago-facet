@@ -2,8 +2,6 @@ package facet
 
 import (
 	"errors"
-	"math"
-	"os"
 	"path"
 	"strings"
 
@@ -37,8 +35,7 @@ func pathCode(err error) int32 {
 		return ErrOK
 	}
 	if errors.Is(err, unix.EXDEV) {
-		// openat2(RESOLVE_BENEATH) reports EXDEV when resolution attempts to
-		// escape the supplied directory capability.
+		// openat2(RESOLVE_BENEATH) reports EXDEV for an attempted capability escape.
 		return ErrPermission
 	}
 	if errors.Is(err, unix.ENOSYS) {
@@ -47,36 +44,22 @@ func pathCode(err error) int32 {
 	return errorCode(err)
 }
 
-func normalizeFacetPath(value string) (string, int32) {
-	if code := validatePathText(value); code != ErrOK {
-		return "", code
+// facetPath performs only lexical checks that are independent of filesystem
+// state. Do not clean or collapse "..": Facet defines it in terms of resolved
+// directory components, and openat2 must see the original path to preserve
+// symlink semantics while enforcing RESOLVE_BENEATH.
+func facetPath(value string) (string, int32) {
+	if strings.IndexByte(value, 0) >= 0 || value == "" {
+		return "", ErrInvalid
 	}
 	if strings.HasPrefix(value, "/") {
 		return "", ErrPermission
 	}
-	parts := strings.Split(value, "/")
-	stack := make([]string, 0, len(parts))
-	for _, part := range parts {
-		switch part {
-		case "", ".":
-			continue
-		case "..":
-			if len(stack) == 0 {
-				return "", ErrPermission
-			}
-			stack = stack[:len(stack)-1]
-		default:
-			stack = append(stack, part)
-		}
-	}
-	if len(stack) == 0 {
-		return ".", ErrOK
-	}
-	return strings.Join(stack, "/"), ErrOK
+	return value, ErrOK
 }
 
 func openBeneath(dirfd int, name string, flags int, mode uint32) (int, int32) {
-	normalized, code := normalizeFacetPath(name)
+	name, code := facetPath(name)
 	if code != ErrOK {
 		return -1, code
 	}
@@ -85,7 +68,7 @@ func openBeneath(dirfd int, name string, flags int, mode uint32) (int, int32) {
 		Mode:    uint64(mode),
 		Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS,
 	}
-	fd, err := unix.Openat2(dirfd, normalized, how)
+	fd, err := unix.Openat2(dirfd, name, how)
 	if err != nil {
 		return -1, pathCode(err)
 	}
@@ -93,14 +76,14 @@ func openBeneath(dirfd int, name string, flags int, mode uint32) (int, int32) {
 }
 
 func secureParent(dirfd int, name string) (parent int, leaf string, code int32) {
-	normalized, code := normalizeFacetPath(name)
+	name, code = facetPath(name)
 	if code != ErrOK {
 		return -1, "", code
 	}
-	if normalized == "." {
+	parentName, leaf := path.Split(name)
+	if leaf == "" || leaf == "." || leaf == ".." {
 		return -1, "", ErrInvalid
 	}
-	parentName, leaf := path.Split(normalized)
 	parentName = strings.TrimSuffix(parentName, "/")
 	if parentName == "" {
 		parentName = "."
@@ -174,12 +157,42 @@ func openFlagsToUnix(flags uint32, requested uint64) (int, int32) {
 	return access, ErrOK
 }
 
+func openFlagsToFDFlags(flags uint32) uint32 {
+	var out uint32
+	if flags&OpenAppend != 0 {
+		out |= FDAppend
+	}
+	if flags&OpenNonblock != 0 {
+		out |= FDNonblock
+	}
+	return out
+}
+
+func (p *Plugin) precheckPathOpen(m wago.HostModule, directory uint64, flags uint32, requested uint64) int32 {
+	if requested&^allFacetRights != 0 {
+		return ErrInvalid
+	}
+	if _, code := openFlagsToUnix(flags, requested); code != ErrOK {
+		return code
+	}
+	state := p.stateFor(m)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	parent, code := getDirectoryCapability(state, directory, RightPathOpen)
+	if code != ErrOK {
+		return code
+	}
+	if requested&^parent.rights != 0 {
+		return ErrCapability
+	}
+	if flags&OpenCreate != 0 && parent.rights&RightPathCreate == 0 {
+		return ErrCapability
+	}
+	return ErrOK
+}
+
 func (p *Plugin) pathOpenDecoded(m wago.HostModule, directory uint64, value string, openFlags uint32, requested uint64, results []uint64) {
 	zeroResults(results)
-	if requested&^allFacetRights != 0 {
-		results[1] = uint64(uint32(ErrInvalid))
-		return
-	}
 	unixFlags, code := openFlagsToUnix(openFlags, requested)
 	if code != ErrOK {
 		results[1] = uint64(uint32(code))
@@ -193,11 +206,7 @@ func (p *Plugin) pathOpenDecoded(m wago.HostModule, directory uint64, value stri
 		results[1] = uint64(uint32(code))
 		return
 	}
-	if requested&^parent.rights != 0 {
-		results[1] = uint64(uint32(ErrCapability))
-		return
-	}
-	if openFlags&OpenCreate != 0 && parent.rights&RightPathCreate == 0 {
+	if requested&^parent.rights != 0 || openFlags&OpenCreate != 0 && parent.rights&RightPathCreate == 0 {
 		results[1] = uint64(uint32(ErrCapability))
 		return
 	}
@@ -228,33 +237,31 @@ func (p *Plugin) pathOpenDecoded(m wago.HostModule, directory uint64, value stri
 	results[1] = uint64(uint32(ErrOK))
 }
 
-func openFlagsToFDFlags(flags uint32) uint32 {
-	var out uint32
-	if flags&OpenAppend != 0 {
-		out |= FDAppend
-	}
-	if flags&OpenNonblock != 0 {
-		out |= FDNonblock
-	}
-	return out
-}
-
 func (p *Plugin) pathOpenMemoryHost(width textWidth, addressType wago.GuestMemoryAddressType) wago.HostFunc {
 	return func(m wago.HostModule, params, results []uint64) {
 		zeroResults(results)
 		if len(params) != 7 || len(results) < 2 {
 			panic(wago.HostTrap{Err: errors.New("facet: path_open memory signature mismatch")})
 		}
+		wtf, flags, requested := int32(uint32(params[4])), uint32(params[5]), params[6]
+		if !validWTF(wtf) {
+			results[1] = uint64(uint32(ErrInvalid))
+			return
+		}
+		if code := p.precheckPathOpen(m, params[0], flags, requested); code != ErrOK {
+			results[1] = uint64(uint32(code))
+			return
+		}
 		ptr, units := params[2], params[3]
 		if addressType == wago.GuestMemory32 {
 			ptr, units = uint64(uint32(ptr)), uint64(uint32(units))
 		}
-		value, code := readGuestTextMemory(m, width, addressType, uint32(params[1]), ptr, units, int32(uint32(params[4])))
+		value, code := readGuestTextMemory(m, width, addressType, uint32(params[1]), ptr, units, wtf)
 		if code != ErrOK {
 			results[1] = uint64(uint32(code))
 			return
 		}
-		p.pathOpenDecoded(m, params[0], value, uint32(params[5]), params[6], results)
+		p.pathOpenDecoded(m, params[0], value, flags, requested, results)
 	}
 }
 
@@ -264,12 +271,21 @@ func (p *Plugin) pathOpenArrayHost(width textWidth) wago.HostFunc {
 		if len(params) != 7 || len(results) < 2 {
 			panic(wago.HostTrap{Err: errors.New("facet: path_open array signature mismatch")})
 		}
-		value, code := readGuestTextArray(m, width, params[1], uint32(params[2]), uint32(params[3]), int32(uint32(params[4])))
+		wtf, flags, requested := int32(uint32(params[4])), uint32(params[5]), params[6]
+		if !validWTF(wtf) {
+			results[1] = uint64(uint32(ErrInvalid))
+			return
+		}
+		if code := p.precheckPathOpen(m, params[0], flags, requested); code != ErrOK {
+			results[1] = uint64(uint32(code))
+			return
+		}
+		value, code := readGuestTextArray(m, width, params[1], uint32(params[2]), uint32(params[3]), wtf)
 		if code != ErrOK {
 			results[1] = uint64(uint32(code))
 			return
 		}
-		p.pathOpenDecoded(m, params[0], value, uint32(params[5]), params[6], results)
+		p.pathOpenDecoded(m, params[0], value, flags, requested, results)
 	}
 }
 
@@ -318,10 +334,6 @@ func writeUnixStat(results []uint64, st *unix.Stat_t, code int32) {
 }
 
 func (p *Plugin) pathStatDecoded(m wago.HostModule, directory uint64, value string, flags uint32, results []uint64) {
-	if flags&^PathFollowSymlink != 0 {
-		writeUnixStat(results, nil, ErrInvalid)
-		return
-	}
 	state := p.stateFor(m)
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -354,20 +366,25 @@ func (p *Plugin) pathStatMemoryHost(width textWidth, addressType wago.GuestMemor
 		if len(params) != 6 || len(results) < 10 {
 			panic(wago.HostTrap{Err: errors.New("facet: path_stat memory signature mismatch")})
 		}
-		if uint32(params[5])&^PathFollowSymlink != 0 {
+		wtf, flags := int32(uint32(params[4])), uint32(params[5])
+		if !validWTF(wtf) || flags&^PathFollowSymlink != 0 {
 			results[9] = uint64(uint32(ErrInvalid))
+			return
+		}
+		if code := p.precheckDirectory(m, params[0], RightStat); code != ErrOK {
+			results[9] = uint64(uint32(code))
 			return
 		}
 		ptr, units := params[2], params[3]
 		if addressType == wago.GuestMemory32 {
 			ptr, units = uint64(uint32(ptr)), uint64(uint32(units))
 		}
-		value, code := readGuestTextMemory(m, width, addressType, uint32(params[1]), ptr, units, int32(uint32(params[4])))
+		value, code := readGuestTextMemory(m, width, addressType, uint32(params[1]), ptr, units, wtf)
 		if code != ErrOK {
 			results[9] = uint64(uint32(code))
 			return
 		}
-		p.pathStatDecoded(m, params[0], value, uint32(params[5]), results)
+		p.pathStatDecoded(m, params[0], value, flags, results)
 	}
 }
 
@@ -377,16 +394,21 @@ func (p *Plugin) pathStatArrayHost(width textWidth) wago.HostFunc {
 		if len(params) != 6 || len(results) < 10 {
 			panic(wago.HostTrap{Err: errors.New("facet: path_stat array signature mismatch")})
 		}
-		if uint32(params[5])&^PathFollowSymlink != 0 {
+		wtf, flags := int32(uint32(params[4])), uint32(params[5])
+		if !validWTF(wtf) || flags&^PathFollowSymlink != 0 {
 			results[9] = uint64(uint32(ErrInvalid))
 			return
 		}
-		value, code := readGuestTextArray(m, width, params[1], uint32(params[2]), uint32(params[3]), int32(uint32(params[4])))
+		if code := p.precheckDirectory(m, params[0], RightStat); code != ErrOK {
+			results[9] = uint64(uint32(code))
+			return
+		}
+		value, code := readGuestTextArray(m, width, params[1], uint32(params[2]), uint32(params[3]), wtf)
 		if code != ErrOK {
 			results[9] = uint64(uint32(code))
 			return
 		}
-		p.pathStatDecoded(m, params[0], value, uint32(params[5]), results)
+		p.pathStatDecoded(m, params[0], value, flags, results)
 	}
 }
 
@@ -412,11 +434,20 @@ func (p *Plugin) createDirMemoryHost(width textWidth, addressType wago.GuestMemo
 		if len(params) != 5 || len(results) < 1 {
 			panic(wago.HostTrap{Err: errors.New("facet: path_create_dir memory signature mismatch")})
 		}
+		wtf := int32(uint32(params[4]))
+		if !validWTF(wtf) {
+			results[0] = uint64(uint32(ErrInvalid))
+			return
+		}
+		if code := p.precheckDirectory(m, params[0], RightPathCreate); code != ErrOK {
+			results[0] = uint64(uint32(code))
+			return
+		}
 		ptr, units := params[2], params[3]
 		if addressType == wago.GuestMemory32 {
 			ptr, units = uint64(uint32(ptr)), uint64(uint32(units))
 		}
-		value, code := readGuestTextMemory(m, width, addressType, uint32(params[1]), ptr, units, int32(uint32(params[4])))
+		value, code := readGuestTextMemory(m, width, addressType, uint32(params[1]), ptr, units, wtf)
 		if code == ErrOK {
 			code = p.createDirDecoded(m, params[0], value)
 		}
@@ -430,7 +461,16 @@ func (p *Plugin) createDirArrayHost(width textWidth) wago.HostFunc {
 		if len(params) != 5 || len(results) < 1 {
 			panic(wago.HostTrap{Err: errors.New("facet: path_create_dir array signature mismatch")})
 		}
-		value, code := readGuestTextArray(m, width, params[1], uint32(params[2]), uint32(params[3]), int32(uint32(params[4])))
+		wtf := int32(uint32(params[4]))
+		if !validWTF(wtf) {
+			results[0] = uint64(uint32(ErrInvalid))
+			return
+		}
+		if code := p.precheckDirectory(m, params[0], RightPathCreate); code != ErrOK {
+			results[0] = uint64(uint32(code))
+			return
+		}
+		value, code := readGuestTextArray(m, width, params[1], uint32(params[2]), uint32(params[3]), wtf)
 		if code == ErrOK {
 			code = p.createDirDecoded(m, params[0], value)
 		}
@@ -439,9 +479,6 @@ func (p *Plugin) createDirArrayHost(width textWidth) wago.HostFunc {
 }
 
 func (p *Plugin) removeDecoded(m wago.HostModule, directory uint64, value string, flags uint32) int32 {
-	if flags != RemoveFile && flags != RemoveDirectory {
-		return ErrInvalid
-	}
 	state := p.stateFor(m)
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -467,16 +504,20 @@ func (p *Plugin) removeMemoryHost(width textWidth, addressType wago.GuestMemoryA
 		if len(params) != 6 || len(results) < 1 {
 			panic(wago.HostTrap{Err: errors.New("facet: path_remove memory signature mismatch")})
 		}
-		flags := uint32(params[5])
-		if flags != RemoveFile && flags != RemoveDirectory {
+		wtf, flags := int32(uint32(params[4])), uint32(params[5])
+		if !validWTF(wtf) || flags != RemoveFile && flags != RemoveDirectory {
 			results[0] = uint64(uint32(ErrInvalid))
+			return
+		}
+		if code := p.precheckDirectory(m, params[0], RightPathRemove); code != ErrOK {
+			results[0] = uint64(uint32(code))
 			return
 		}
 		ptr, units := params[2], params[3]
 		if addressType == wago.GuestMemory32 {
 			ptr, units = uint64(uint32(ptr)), uint64(uint32(units))
 		}
-		value, code := readGuestTextMemory(m, width, addressType, uint32(params[1]), ptr, units, int32(uint32(params[4])))
+		value, code := readGuestTextMemory(m, width, addressType, uint32(params[1]), ptr, units, wtf)
 		if code == ErrOK {
 			code = p.removeDecoded(m, params[0], value, flags)
 		}
@@ -490,12 +531,16 @@ func (p *Plugin) removeArrayHost(width textWidth) wago.HostFunc {
 		if len(params) != 6 || len(results) < 1 {
 			panic(wago.HostTrap{Err: errors.New("facet: path_remove array signature mismatch")})
 		}
-		flags := uint32(params[5])
-		if flags != RemoveFile && flags != RemoveDirectory {
+		wtf, flags := int32(uint32(params[4])), uint32(params[5])
+		if !validWTF(wtf) || flags != RemoveFile && flags != RemoveDirectory {
 			results[0] = uint64(uint32(ErrInvalid))
 			return
 		}
-		value, code := readGuestTextArray(m, width, params[1], uint32(params[2]), uint32(params[3]), int32(uint32(params[4])))
+		if code := p.precheckDirectory(m, params[0], RightPathRemove); code != ErrOK {
+			results[0] = uint64(uint32(code))
+			return
+		}
+		value, code := readGuestTextArray(m, width, params[1], uint32(params[2]), uint32(params[3]), wtf)
 		if code == ErrOK {
 			code = p.removeDecoded(m, params[0], value, flags)
 		}
@@ -551,7 +596,20 @@ func (p *Plugin) renameMemoryHost(width textWidth, addressType wago.GuestMemoryA
 		if len(params) != 11 || len(results) < 1 {
 			panic(wago.HostTrap{Err: errors.New("facet: path_rename memory signature mismatch")})
 		}
-		if _, code := renameUnixFlags(uint32(params[10])); code != ErrOK {
+		srcWTF, dstWTF, flags := int32(uint32(params[4])), int32(uint32(params[9])), uint32(params[10])
+		if !validWTF(srcWTF) || !validWTF(dstWTF) {
+			results[0] = uint64(uint32(ErrInvalid))
+			return
+		}
+		if _, code := renameUnixFlags(flags); code != ErrOK {
+			results[0] = uint64(uint32(code))
+			return
+		}
+		if code := p.precheckDirectory(m, params[0], RightPathRename); code != ErrOK {
+			results[0] = uint64(uint32(code))
+			return
+		}
+		if code := p.precheckDirectory(m, params[5], RightPathRename); code != ErrOK {
 			results[0] = uint64(uint32(code))
 			return
 		}
@@ -561,14 +619,14 @@ func (p *Plugin) renameMemoryHost(width textWidth, addressType wago.GuestMemoryA
 			srcPtr, srcUnits = uint64(uint32(srcPtr)), uint64(uint32(srcUnits))
 			dstPtr, dstUnits = uint64(uint32(dstPtr)), uint64(uint32(dstUnits))
 		}
-		src, code := readGuestTextMemory(m, width, addressType, uint32(params[1]), srcPtr, srcUnits, int32(uint32(params[4])))
+		src, code := readGuestTextMemory(m, width, addressType, uint32(params[1]), srcPtr, srcUnits, srcWTF)
 		if code != ErrOK {
 			results[0] = uint64(uint32(code))
 			return
 		}
-		dst, code := readGuestTextMemory(m, width, addressType, uint32(params[6]), dstPtr, dstUnits, int32(uint32(params[9])))
+		dst, code := readGuestTextMemory(m, width, addressType, uint32(params[6]), dstPtr, dstUnits, dstWTF)
 		if code == ErrOK {
-			code = p.renameDecoded(m, params[0], src, params[5], dst, uint32(params[10]))
+			code = p.renameDecoded(m, params[0], src, params[5], dst, flags)
 		}
 		results[0] = uint64(uint32(code))
 	}
@@ -580,18 +638,31 @@ func (p *Plugin) renameArrayHost(width textWidth) wago.HostFunc {
 		if len(params) != 11 || len(results) < 1 {
 			panic(wago.HostTrap{Err: errors.New("facet: path_rename array signature mismatch")})
 		}
-		if _, code := renameUnixFlags(uint32(params[10])); code != ErrOK {
+		srcWTF, dstWTF, flags := int32(uint32(params[4])), int32(uint32(params[9])), uint32(params[10])
+		if !validWTF(srcWTF) || !validWTF(dstWTF) {
+			results[0] = uint64(uint32(ErrInvalid))
+			return
+		}
+		if _, code := renameUnixFlags(flags); code != ErrOK {
 			results[0] = uint64(uint32(code))
 			return
 		}
-		src, code := readGuestTextArray(m, width, params[1], uint32(params[2]), uint32(params[3]), int32(uint32(params[4])))
+		if code := p.precheckDirectory(m, params[0], RightPathRename); code != ErrOK {
+			results[0] = uint64(uint32(code))
+			return
+		}
+		if code := p.precheckDirectory(m, params[5], RightPathRename); code != ErrOK {
+			results[0] = uint64(uint32(code))
+			return
+		}
+		src, code := readGuestTextArray(m, width, params[1], uint32(params[2]), uint32(params[3]), srcWTF)
 		if code != ErrOK {
 			results[0] = uint64(uint32(code))
 			return
 		}
-		dst, code := readGuestTextArray(m, width, params[6], uint32(params[7]), uint32(params[8]), int32(uint32(params[9])))
+		dst, code := readGuestTextArray(m, width, params[6], uint32(params[7]), uint32(params[8]), dstWTF)
 		if code == ErrOK {
-			code = p.renameDecoded(m, params[0], src, params[5], dst, uint32(params[10]))
+			code = p.renameDecoded(m, params[0], src, params[5], dst, flags)
 		}
 		results[0] = uint64(uint32(code))
 	}
@@ -606,9 +677,9 @@ func (p *Plugin) pathBindings() []binding {
 		width  textWidth
 	}{{"i8", textI8}, {"i16", textI16}, {"i32", textI32}} {
 		out = append(out,
-			binding{"path_open_mem32_" + spec.suffix, p.pathOpenMemoryHost(spec.width, wago.GuestMemory32), []wago.ValType{i32, i32, i32, i32, i32, i32, i64}, []wago.ValType{i32, i32}, CapFilesystemRead, "open a path beneath a directory capability from Memory32"},
-			binding{"path_open_mem64_" + spec.suffix, p.pathOpenMemoryHost(spec.width, wago.GuestMemory64), []wago.ValType{i32, i32, i64, i64, i32, i32, i64}, []wago.ValType{i32, i32}, CapFilesystemRead, "open a path beneath a directory capability from Memory64"},
-			binding{"path_open_array_" + spec.suffix, p.pathOpenArrayHost(spec.width), []wago.ValType{i32, anyref, i32, i32, i32, i32, i64}, []wago.ValType{i32, i32}, CapFilesystemRead, "open a path beneath a directory capability from a GC text array"},
+			binding{"path_open_mem32_" + spec.suffix, p.pathOpenMemoryHost(spec.width, wago.GuestMemory32), []wago.ValType{i32, i32, i32, i32, i32, i32, i64}, []wago.ValType{i32, i32}, CapFilesystemWrite, "open a path beneath a directory capability from Memory32"},
+			binding{"path_open_mem64_" + spec.suffix, p.pathOpenMemoryHost(spec.width, wago.GuestMemory64), []wago.ValType{i32, i32, i64, i64, i32, i32, i64}, []wago.ValType{i32, i32}, CapFilesystemWrite, "open a path beneath a directory capability from Memory64"},
+			binding{"path_open_array_" + spec.suffix, p.pathOpenArrayHost(spec.width), []wago.ValType{i32, anyref, i32, i32, i32, i32, i64}, []wago.ValType{i32, i32}, CapFilesystemWrite, "open a path beneath a directory capability from a GC text array"},
 			binding{"path_stat_mem32_" + spec.suffix, p.pathStatMemoryHost(spec.width, wago.GuestMemory32), []wago.ValType{i32, i32, i32, i32, i32, i32}, statResults, CapFilesystemRead, "stat a capability-beneath Memory32 path"},
 			binding{"path_stat_mem64_" + spec.suffix, p.pathStatMemoryHost(spec.width, wago.GuestMemory64), []wago.ValType{i32, i32, i64, i64, i32, i32}, statResults, CapFilesystemRead, "stat a capability-beneath Memory64 path"},
 			binding{"path_stat_array_" + spec.suffix, p.pathStatArrayHost(spec.width), []wago.ValType{i32, anyref, i32, i32, i32, i32}, statResults, CapFilesystemRead, "stat a capability-beneath GC-array path"},
@@ -625,6 +696,3 @@ func (p *Plugin) pathBindings() []binding {
 	}
 	return out
 }
-
-var _ = math.MaxUint64
-var _ = os.ErrNotExist
