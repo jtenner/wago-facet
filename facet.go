@@ -53,45 +53,18 @@ func Definition() wago.PluginDefinition {
 			Authors:    []string{"Joshua Tenner"},
 		},
 		Authorities: []wago.AuthorityRequest{
-			{
-				Name:   wago.AuthorityHostImportDefine,
-				Mode:   wago.AuthorityRequired,
-				Reason: "define the Facet Core WebAssembly import module",
-				Scope:  wago.AuthorityScope{Modules: []string{Module}},
-			},
-			{
-				Name:   wago.AuthorityHostCallerIdentify,
-				Mode:   wago.AuthorityRequired,
-				Reason: "isolate opaque Facet resource handles by guest instance",
-			},
-			{
-				Name:   wago.AuthorityHostArgumentsRead,
-				Mode:   wago.AuthorityRequired,
-				Reason: "expose the runtime-scoped guest argument vector through Facet",
-			},
-			{
-				Name:   wago.AuthorityInstanceCloseObserve,
-				Mode:   wago.AuthorityRequired,
-				Reason: "release Facet resources when their guest instance closes",
-			},
-			{
-				Name:   wago.AuthorityInstanceInstantiateIntercept,
-				Mode:   wago.AuthorityOptional,
-				Reason: "validate caller-selected concrete GC-array result storage before instantiation",
-			},
+			{Name: wago.AuthorityHostImportDefine, Mode: wago.AuthorityRequired, Reason: "define the Facet Core WebAssembly import module", Scope: wago.AuthorityScope{Modules: []string{Module}}},
+			{Name: wago.AuthorityHostCallerIdentify, Mode: wago.AuthorityRequired, Reason: "isolate opaque Facet resource handles by guest instance"},
+			{Name: wago.AuthorityHostArgumentsRead, Mode: wago.AuthorityRequired, Reason: "expose the runtime-scoped guest argument vector through Facet"},
+			{Name: wago.AuthorityInstanceCloseObserve, Mode: wago.AuthorityRequired, Reason: "release Facet resources when their guest instance closes"},
+			{Name: wago.AuthorityInstanceInstantiateIntercept, Mode: wago.AuthorityOptional, Reason: "validate caller-selected concrete GC-array result storage before instantiation"},
 		},
 		ConfigSchema: ConfigSchema(),
 	}
 }
 
 func Provider() wago.PluginProvider {
-	return wago.PluginProvider{
-		Definition: Definition(),
-		New: func() wago.Plugin {
-			return &Plugin{}
-		},
-		ValidateConfig: validatePluginConfig,
-	}
+	return wago.PluginProvider{Definition: Definition(), New: func() wago.Plugin { return &Plugin{} }, ValidateConfig: validatePluginConfig}
 }
 
 type Plugin struct {
@@ -113,7 +86,6 @@ func (p *Plugin) Register(reg *wago.Registrar) error {
 		return err
 	}
 	p.cfg = resolved
-
 	p.arguments, err = reg.GuestArguments()
 	if err != nil {
 		return err
@@ -141,7 +113,7 @@ func (p *Plugin) Register(reg *wago.Registrar) error {
 			return err
 		}
 		if err := instantiate.Before(func(request wago.InstantiationRequest) error {
-			return validateAllocatingTextImports(request.Module)
+			return validateAllAllocatingTextImports(request.Module)
 		}); err != nil {
 			return err
 		}
@@ -249,8 +221,6 @@ func Imports(cfg Config) wago.Imports {
 	return out
 }
 
-// MarshalConfig validates and marshals a plugin-friendly configuration. It is
-// primarily useful to embedders constructing Wago lock selections in code.
 func MarshalConfig(cfg any) (json.RawMessage, error) {
 	raw, err := json.Marshal(cfg)
 	if err != nil {
