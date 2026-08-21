@@ -35,7 +35,6 @@ func pathCode(err error) int32 {
 		return ErrOK
 	}
 	if errors.Is(err, unix.EXDEV) {
-		// openat2(RESOLVE_BENEATH) reports EXDEV for an attempted capability escape.
 		return ErrPermission
 	}
 	if errors.Is(err, unix.ENOSYS) {
@@ -44,10 +43,6 @@ func pathCode(err error) int32 {
 	return errorCode(err)
 }
 
-// facetPath performs only lexical checks that are independent of filesystem
-// state. Do not clean or collapse "..": Facet defines it in terms of resolved
-// directory components, and openat2 must see the original path to preserve
-// symlink semantics while enforcing RESOLVE_BENEATH.
 func facetPath(value string) (string, int32) {
 	if strings.IndexByte(value, 0) >= 0 || value == "" {
 		return "", ErrInvalid
@@ -63,11 +58,7 @@ func openBeneath(dirfd int, name string, flags int, mode uint32) (int, int32) {
 	if code != ErrOK {
 		return -1, code
 	}
-	how := &unix.OpenHow{
-		Flags:   uint64(flags | unix.O_CLOEXEC),
-		Mode:    uint64(mode),
-		Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS,
-	}
+	how := &unix.OpenHow{Flags: uint64(flags | unix.O_CLOEXEC), Mode: uint64(mode), Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS}
 	fd, err := unix.Openat2(dirfd, name, how)
 	if err != nil {
 		return -1, pathCode(err)
@@ -210,7 +201,11 @@ func (p *Plugin) pathOpenDecoded(m wago.HostModule, directory uint64, value stri
 		results[1] = uint64(uint32(ErrCapability))
 		return
 	}
-	fd, code := openBeneath(parent.file.fd, value, unixFlags, 0o666)
+	var mode uint32
+	if openFlags&OpenCreate != 0 {
+		mode = 0o666
+	}
+	fd, code := openBeneath(parent.file.fd, value, unixFlags, mode)
 	if code != ErrOK {
 		results[1] = uint64(uint32(code))
 		return
@@ -221,12 +216,7 @@ func (p *Plugin) pathOpenDecoded(m wago.HostModule, directory uint64, value stri
 		results[1] = uint64(uint32(errorCode(err)))
 		return
 	}
-	entry := &handleEntry{
-		kind:   handleFile,
-		rights: requested,
-		flags:  openFlagsToFDFlags(openFlags),
-		file:   &fileResource{fd: fd, directory: st.Mode&unix.S_IFMT == unix.S_IFDIR},
-	}
+	entry := &handleEntry{kind: handleFile, rights: requested, flags: openFlagsToFDFlags(openFlags), file: &fileResource{fd: fd, directory: st.Mode&unix.S_IFMT == unix.S_IFDIR}}
 	id, code := state.alloc(entry)
 	if code != ErrOK {
 		_ = unix.Close(fd)
