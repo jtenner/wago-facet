@@ -330,7 +330,12 @@ func pollDescriptor(h *handleEntry, interest uint32) (immediate uint32, fd int, 
 			}
 			return immediate, -1, 0
 		}
-	} else if h.pre != nil {
+	} else if h.file != nil {
+		if h.file.directory || h.kind == handlePreopen {
+			return PollError, -1, 0
+		}
+		fd = h.file.fd
+	} else {
 		return PollError, -1, 0
 	}
 	if interest&PollReadable != 0 {
