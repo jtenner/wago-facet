@@ -28,6 +28,37 @@ func validatePositionalFD(h *handleEntry, op fdIOOperation) int32 {
 	return ErrOK
 }
 
+// Linux historically applies O_APPEND even to pwrite. Facet positional writes
+// must honor the supplied offset, so temporarily suppress append on the open
+// file description while the instance-state lock serializes operations on this
+// handle. The original flags are restored before returning.
+func pwriteExplicitOffset(h *handleEntry, buf []byte, offset int64) (int, error) {
+	if h.flags&FDAppend == 0 {
+		return unix.Pwrite(h.file.fd, buf, offset)
+	}
+	flags, err := unix.FcntlInt(uintptr(h.file.fd), unix.F_GETFL, 0)
+	if err != nil {
+		return 0, err
+	}
+	if flags&unix.O_APPEND == 0 {
+		return unix.Pwrite(h.file.fd, buf, offset)
+	}
+	if _, err := unix.FcntlInt(uintptr(h.file.fd), unix.F_SETFL, flags&^unix.O_APPEND); err != nil {
+		return 0, err
+	}
+	n, writeErr := unix.Pwrite(h.file.fd, buf, offset)
+	_, restoreErr := unix.FcntlInt(uintptr(h.file.fd), unix.F_SETFL, flags)
+	if restoreErr != nil {
+		if n > 0 {
+			// The write is already externally visible. Preserve Facet partial-I/O
+			// semantics; the next descriptor operation can surface the host failure.
+			return n, nil
+		}
+		return 0, restoreErr
+	}
+	return n, writeErr
+}
+
 func positionalFD(h *handleEntry, op fdIOOperation, offset int64, buf []byte) (uint64, int32) {
 	if len(buf) == 0 {
 		return 0, ErrOK
@@ -37,7 +68,7 @@ func positionalFD(h *handleEntry, op fdIOOperation, offset int64, buf []byte) (u
 	if op == fdIORead {
 		n, err = unix.Pread(h.file.fd, buf, offset)
 	} else {
-		n, err = unix.Pwrite(h.file.fd, buf, offset)
+		n, err = pwriteExplicitOffset(h, buf, offset)
 	}
 	return normalizeStreamResult(n, err)
 }
