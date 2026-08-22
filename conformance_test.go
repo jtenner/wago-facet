@@ -104,6 +104,10 @@ type facetPluginPreopen struct {
 	Rights []string `json:"rights"`
 }
 
+func facetExecutableKind(kind string) bool {
+	return kind == "wast" || kind == "link"
+}
+
 func TestFacetConformance(t *testing.T) {
 	specDir := os.Getenv(facetSpecDirEnv)
 	if specDir == "" {
@@ -131,7 +135,7 @@ func TestFacetConformance(t *testing.T) {
 		var result facetResult
 		if test.Kind == "harness" {
 			result = facetResult{ID: test.ID, Status: "HARNESS", Reason: "requires external manifest operations"}
-		} else if test.Kind == "wast" {
+		} else if facetExecutableKind(test.Kind) {
 			result = runFacetCaseProcess(test.ID)
 		} else {
 			result = facetResult{ID: test.ID, Status: "FAIL", Reason: "unknown catalog kind " + test.Kind}
@@ -204,7 +208,7 @@ func runFacetCase(t *testing.T, specDir, id string) (result facetResult) {
 		result.Reason = "case is not in the pinned catalog"
 		return
 	}
-	if test.Kind != "wast" {
+	if !facetExecutableKind(test.Kind) {
 		result.Status = "HARNESS"
 		return
 	}
