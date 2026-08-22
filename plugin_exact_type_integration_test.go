@@ -34,6 +34,20 @@ func facetPluginSetForTest(t *testing.T) wago.PluginSet {
 	}
 }
 
+func callerTypedArrayImportOnlyModule(storage byte) []byte {
+	// type 0: (array (mut <storage>))
+	arrayType := []byte{0x5e, storage, 0x01}
+	// type 1: (func (param i32 i32) (result (ref null 0) i32))
+	funcType := []byte{0x60, 0x02, 0x7f, 0x7f, 0x02, 0x63, 0x00, 0x7f}
+	importEntry := append(wasmtest.Name(Module), wasmtest.Name("args_read_array_i8")...)
+	importEntry = append(importEntry, 0x00) // function import
+	importEntry = append(importEntry, wasmtest.ULEB(1)...)
+	return wasmtest.Module(
+		wasmtest.Section(1, wasmtest.Vec(arrayType, funcType)),
+		wasmtest.Section(2, wasmtest.Vec(importEntry)),
+	)
+}
+
 func callerTypedArrayImportModule(storage byte) []byte {
 	// type 0: (array (mut <storage>))
 	arrayType := []byte{0x5e, storage, 0x01}
@@ -73,6 +87,23 @@ func newFacetIntegrationRuntime(t *testing.T) *wago.Runtime {
 	}
 	t.Cleanup(func() { _ = rt.Close() })
 	return rt
+}
+
+func TestCallerTypedArrayImportOnlyModuleInstantiates(t *testing.T) {
+	rt := newFacetIntegrationRuntime(t)
+	// This module has a collector-reference Facet import but no local Wasm
+	// functions. Wago must keep the Runtime GC domain without requiring a native
+	// Wasm callsite root map that cannot exist.
+	mod, err := rt.Compile(callerTypedArrayImportOnlyModule(0x78))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mod.Close()
+	inst, err := rt.Instantiate(context.Background(), mod)
+	if err != nil {
+		t.Fatalf("import-only caller-typed i8 Facet module failed instantiation: %v", err)
+	}
+	defer inst.Close()
 }
 
 func TestCallerTypedArrayImportInstantiatesWithMatchingStorage(t *testing.T) {
