@@ -40,7 +40,7 @@ func callerTypedArrayImportModule(storage byte) []byte {
 	// type 1: (func (param i32 i32) (result (ref null 0) i32))
 	funcType := []byte{0x60, 0x02, 0x7f, 0x7f, 0x02, 0x63, 0x00, 0x7f}
 	// type 2: (func (result i32))
-	callerType := wasmtest.FuncType(nil, []wasm.ValType{wasm.I32})
+	callerType := []byte{0x60, 0x00, 0x01, 0x7f}
 	importEntry := append(wasmtest.Name(Module), wasmtest.Name("args_read_array_i8")...)
 	importEntry = append(importEntry, 0x00) // function import
 	importEntry = append(importEntry, wasmtest.ULEB(1)...)
