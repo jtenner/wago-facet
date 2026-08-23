@@ -4,6 +4,7 @@ package facet
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -86,8 +87,9 @@ type facetAction struct {
 }
 
 type facetValue struct {
-	Type  string          `json:"type"`
-	Value json.RawMessage `json:"value"`
+	Type     string          `json:"type"`
+	LaneType string          `json:"lane_type"`
+	Value    json.RawMessage `json:"value"`
 }
 
 type facetPluginConfig struct {
@@ -308,7 +310,7 @@ func executeFacetWAST(t *testing.T, specDir string, test facetCatalogTest) (int,
 		instances = append(instances, instance)
 		return instance, nil
 	}
-	action := func(a facetAction) ([]wago.Value, error) {
+	selectInstance := func(a facetAction) (*wago.Instance, error) {
 		instance := current
 		if a.Module != "" {
 			instance = named[a.Module]
@@ -319,6 +321,13 @@ func executeFacetWAST(t *testing.T, specDir string, test facetCatalogTest) (int,
 		if a.Type != "invoke" {
 			return nil, fmt.Errorf("action type %q is not supported", a.Type)
 		}
+		return instance, nil
+	}
+	action := func(a facetAction) ([]wago.Value, error) {
+		instance, err := selectInstance(a)
+		if err != nil {
+			return nil, err
+		}
 		args := make([]wago.Value, len(a.Args))
 		for i, raw := range a.Args {
 			value, err := facetArgument(raw)
@@ -328,6 +337,21 @@ func executeFacetWAST(t *testing.T, specDir string, test facetCatalogTest) (int,
 			args[i] = value
 		}
 		return instance.Call(context.Background(), a.Field, args...)
+	}
+	rawAction := func(a facetAction) ([]uint64, error) {
+		instance, err := selectInstance(a)
+		if err != nil {
+			return nil, err
+		}
+		var args []uint64
+		for _, raw := range a.Args {
+			slots, err := facetRawArgument(raw)
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, slots...)
+		}
+		return instance.Invoke(a.Field, args...)
 	}
 
 	assertions := 0
@@ -344,6 +368,16 @@ func executeFacetWAST(t *testing.T, specDir string, test facetCatalogTest) (int,
 			}
 		case "assert_return":
 			assertions++
+			if facetExpectedHasV128(command.Expected) {
+				values, err := rawAction(command.Action)
+				if err != nil {
+					return assertions, fmt.Errorf("line %d trapped: %w", command.Line, err)
+				}
+				if err := compareFacetRawResults(values, command.Expected); err != nil {
+					return assertions, fmt.Errorf("line %d: %w", command.Line, err)
+				}
+				continue
+			}
 			values, err := action(command.Action)
 			if err != nil {
 				return assertions, fmt.Errorf("line %d trapped: %w", command.Line, err)
@@ -535,6 +569,41 @@ func facetArgument(value facetValue) (wago.Value, error) {
 	}
 }
 
+func facetRawArgument(value facetValue) ([]uint64, error) {
+	text := strings.Trim(string(value.Value), "\"")
+	switch value.Type {
+	case "i32":
+		v, err := strconv.ParseInt(text, 10, 32)
+		if err != nil {
+			return nil, err
+		}
+		return []uint64{uint64(uint32(int32(v)))}, nil
+	case "i64":
+		v, err := strconv.ParseInt(text, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		return []uint64{uint64(v)}, nil
+	case "v128":
+		lo, hi, err := facetV128Slots(value)
+		if err != nil {
+			return nil, err
+		}
+		return []uint64{lo, hi}, nil
+	default:
+		return nil, fmt.Errorf("argument type %q is not implemented by the raw adapter", value.Type)
+	}
+}
+
+func facetExpectedHasV128(expected []facetValue) bool {
+	for _, value := range expected {
+		if value.Type == "v128" {
+			return true
+		}
+	}
+	return false
+}
+
 func compareFacetResults(actual []wago.Value, expected []facetValue) error {
 	if len(actual) != len(expected) {
 		return fmt.Errorf("result count=%d; want %d", len(actual), len(expected))
@@ -563,6 +632,133 @@ func compareFacetResults(actual []wago.Value, expected []facetValue) error {
 		}
 	}
 	return nil
+}
+
+func compareFacetRawResults(actual []uint64, expected []facetValue) error {
+	slot := 0
+	for i, want := range expected {
+		if slot >= len(actual) {
+			return fmt.Errorf("result slots=%d; missing result %d", len(actual), i)
+		}
+		text := strings.Trim(string(want.Value), "\"")
+		switch want.Type {
+		case "i32":
+			value, err := strconv.ParseInt(text, 10, 32)
+			if err != nil {
+				return err
+			}
+			if uint32(actual[slot]) != uint32(int32(value)) {
+				return fmt.Errorf("result %d=%#x; want i32(%d)", i, actual[slot], int32(value))
+			}
+			slot++
+		case "i64":
+			value, err := strconv.ParseInt(text, 10, 64)
+			if err != nil {
+				return err
+			}
+			if actual[slot] != uint64(value) {
+				return fmt.Errorf("result %d=%#x; want i64(%d)", i, actual[slot], value)
+			}
+			slot++
+		case "v128":
+			if slot+1 >= len(actual) {
+				return fmt.Errorf("result slots=%d; incomplete v128 result %d", len(actual), i)
+			}
+			lo, hi, err := facetV128Slots(want)
+			if err != nil {
+				return err
+			}
+			if actual[slot] != lo || actual[slot+1] != hi {
+				return fmt.Errorf("result %d=(%#x,%#x); want v128(%#x,%#x)", i, actual[slot], actual[slot+1], lo, hi)
+			}
+			slot += 2
+		default:
+			return fmt.Errorf("expected type %q is not implemented by the raw adapter", want.Type)
+		}
+	}
+	if slot != len(actual) {
+		return fmt.Errorf("result slots=%d; consumed %d", len(actual), slot)
+	}
+	return nil
+}
+
+func facetV128Slots(value facetValue) (uint64, uint64, error) {
+	var lanes []string
+	if err := json.Unmarshal(value.Value, &lanes); err != nil {
+		return 0, 0, fmt.Errorf("decode v128 %s lanes: %w", value.LaneType, err)
+	}
+	bytes := make([]byte, 16)
+	switch value.LaneType {
+	case "i8":
+		if len(lanes) != 16 {
+			return 0, 0, fmt.Errorf("i8 v128 has %d lanes; want 16", len(lanes))
+		}
+		for i, lane := range lanes {
+			v, err := strconv.ParseInt(lane, 10, 8)
+			if err != nil {
+				return 0, 0, err
+			}
+			bytes[i] = byte(int8(v))
+		}
+	case "i16":
+		if len(lanes) != 8 {
+			return 0, 0, fmt.Errorf("i16 v128 has %d lanes; want 8", len(lanes))
+		}
+		for i, lane := range lanes {
+			v, err := strconv.ParseInt(lane, 10, 16)
+			if err != nil {
+				return 0, 0, err
+			}
+			binary.LittleEndian.PutUint16(bytes[i*2:], uint16(int16(v)))
+		}
+	case "i32":
+		if len(lanes) != 4 {
+			return 0, 0, fmt.Errorf("i32 v128 has %d lanes; want 4", len(lanes))
+		}
+		for i, lane := range lanes {
+			v, err := strconv.ParseInt(lane, 10, 32)
+			if err != nil {
+				return 0, 0, err
+			}
+			binary.LittleEndian.PutUint32(bytes[i*4:], uint32(int32(v)))
+		}
+	case "i64":
+		if len(lanes) != 2 {
+			return 0, 0, fmt.Errorf("i64 v128 has %d lanes; want 2", len(lanes))
+		}
+		for i, lane := range lanes {
+			v, err := strconv.ParseInt(lane, 10, 64)
+			if err != nil {
+				return 0, 0, err
+			}
+			binary.LittleEndian.PutUint64(bytes[i*8:], uint64(v))
+		}
+	case "f32":
+		if len(lanes) != 4 {
+			return 0, 0, fmt.Errorf("f32 v128 has %d lanes; want 4", len(lanes))
+		}
+		for i, lane := range lanes {
+			bits, err := strconv.ParseUint(lane, 10, 32)
+			if err != nil {
+				return 0, 0, err
+			}
+			binary.LittleEndian.PutUint32(bytes[i*4:], uint32(bits))
+		}
+	case "f64":
+		if len(lanes) != 2 {
+			return 0, 0, fmt.Errorf("f64 v128 has %d lanes; want 2", len(lanes))
+		}
+		for i, lane := range lanes {
+			bits, err := strconv.ParseUint(lane, 10, 64)
+			if err != nil {
+				return 0, 0, err
+			}
+			binary.LittleEndian.PutUint64(bytes[i*8:], bits)
+		}
+	default:
+		return 0, 0, fmt.Errorf("v128 lane type %q is not implemented by the adapter", value.LaneType)
+	}
+	return binary.LittleEndian.Uint64(bytes[:8]), binary.LittleEndian.Uint64(bytes[8:]), nil
 }
 
 func firstFacetLine(output []byte) string {
