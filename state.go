@@ -75,22 +75,36 @@ type stdioResource struct {
 type instanceState struct {
 	mu sync.Mutex
 
-	cfg          Config
-	preopenFDs   []int
-	nextHandle   uint32
-	handles      map[uint32]*handleEntry
-	stdioIDs     [3]uint32
-	preopenIDs   []uint32
+	cfg             Config
+	preopenFDs      []int
+	ownsPreopenFDs  bool
+	nextHandle      uint32
+	handles         map[uint32]*handleEntry
+	stdioIDs        [3]uint32
+	preopenIDs      []uint32
 }
 
-func newInstanceState(cfg Config, preopenFDs []int) *instanceState {
+func newInstanceState(cfg Config, pinned ...[]int) *instanceState {
 	cfg = normalizeConfig(cfg)
+	var preopenFDs []int
+	ownsPreopenFDs := false
+	if len(pinned) != 0 {
+		preopenFDs = append([]int(nil), pinned[0]...)
+	} else {
+		var err error
+		preopenFDs, err = pinPreopens(cfg.Preopens)
+		if err != nil {
+			panic(fmt.Sprintf("facet: pin raw instance preopens: %v", err))
+		}
+		ownsPreopenFDs = true
+	}
 	return &instanceState{
-		cfg:        cfg,
-		preopenFDs: append([]int(nil), preopenFDs...),
-		nextHandle: 1,
-		handles:    make(map[uint32]*handleEntry),
-		preopenIDs: make([]uint32, len(cfg.Preopens)),
+		cfg:            cfg,
+		preopenFDs:     preopenFDs,
+		ownsPreopenFDs: ownsPreopenFDs,
+		nextHandle:     1,
+		handles:        make(map[uint32]*handleEntry),
+		preopenIDs:     make([]uint32, len(cfg.Preopens)),
 	}
 }
 
@@ -162,6 +176,11 @@ func (s *instanceState) closeAll() {
 	}
 	for i := range s.preopenIDs {
 		s.preopenIDs[i] = 0
+	}
+	if s.ownsPreopenFDs {
+		closePinnedPreopens(s.preopenFDs)
+		s.preopenFDs = nil
+		s.ownsPreopenFDs = false
 	}
 }
 
