@@ -1,10 +1,10 @@
 # Wago runtime integration requirements
 
-Facet makes guest representation choices explicit in import names.
+Facet makes guest representation choices explicit in import names and structural WebAssembly types.
 
-A conforming implementation must honor those choices exactly. `wago-facet` relies on Wago's callback-scoped guest-storage APIs to do this without raw collector pointers or hidden representation changes.
+A conforming implementation must honor those choices exactly. `wago-facet` relies on Wago's callback-scoped guest-storage APIs and pre-instantiation module metadata to do this without raw collector pointers or hidden representation changes.
 
-The runtime gaps that originally blocked complete Facet support are now implemented in the Wago revision pinned by this repository.
+The runtime gaps that originally blocked complete Facet support are implemented in the Wago revision pinned by this repository. Two runtime-boundary rules remain important for embedders: Facet requires exact structural import validation, and Wago's current `HostModule` does not expose the public invocation `context.Context` to a host callback.
 
 ## Indexed linear memory
 
@@ -46,7 +46,22 @@ The integration requires Wago to:
 
 Mutable numeric arrays can be used as zero-copy syscall buffers. No raw pointer API is required.
 
-## Exact caller types
+## Exact structural import signatures
+
+Wago's declarative host-import registration stores the compact public ABI categories (`[]ValType`). That is sufficient to reject scalar/category mismatches but intentionally collapses structural GC references such as `(ref array)` and a concrete caller-defined array reference into `ValAnyRef`.
+
+Facet therefore requires `instance.instantiate.intercept`. Before an instance starts, `wago-facet` inspects the importing module's exact `ImportSpec.ParamTypes` and `ImportSpec.ResultTypes` through `ModuleView`.
+
+For canonical Facet GC-array input parameters, the exact type must be the non-null, non-exact abstract array reference `(ref array)`. A nullable, exact, defined, or different abstract reference is rejected before guest code runs.
+
+Caller-allocated string and readlink results are the deliberate exception to one fixed concrete result type. Facet defines those imports as templates: the caller selects a nullable concrete array result whose element storage class matches the import suffix. `wago-facet` resolves the caller's defined type with `ModuleView.DefinedType` and rejects a storage mismatch during instantiation.
+
+The canonical inventory test and this structural interceptor are complementary:
+
+- the inventory gate proves the complete 261-name import surface and ordered public ABI categories;
+- the instantiation gate proves the structural GC-reference constraints that cannot be represented by `ValType` registration metadata.
+
+## Exact caller types during host calls
 
 Facet has imports whose concrete GC array type is selected by the importing module.
 
@@ -73,7 +88,20 @@ Wago must:
 5. return an ephemeral host-result token;
 6. validate that token against the exact result type before Wasm resumes.
 
-`wago-facet` also uses `instance.instantiate.intercept` when granted so a caller-selected array with the wrong storage class fails instantiation instead of degrading to a runtime `ERR_TYPE`.
+Because `instance.instantiate.intercept` is required by the plugin, a caller-selected array with the wrong storage class fails instantiation instead of degrading to a runtime `ERR_TYPE`.
+
+## DNS cancellation boundary
+
+Go's resolver accepts a `context.Context`, but Wago's current callback `HostModule` surface does not expose the `context.Context` of the active public guest invocation. `wago-facet` therefore cannot correctly attach a resolver query directly to guest-call cancellation without a future Wago callback-context API.
+
+The plugin still fails closed against indefinite resolver blocking:
+
+1. every DNS lookup has a finite 30-second deadline;
+2. plugin shutdown cancels the plugin-owned resolver context and therefore outstanding lookups;
+3. Go context cancellation maps to `ERR_CANCELED`;
+4. deadline expiry maps to `ERR_TIMED_OUT`.
+
+A future Wago host-call context surface can tighten this so cancellation of the active guest invocation immediately cancels the corresponding DNS lookup. Until then, the finite deadline and lifecycle cancellation are the supported boundary; the plugin does not retain an unbounded `context.Background()` resolver operation.
 
 ## GC host-call boundary
 
@@ -89,9 +117,15 @@ Wago therefore provides:
 
 This keeps the public `HostFuncRef` model strict. A declarative plugin `HostFunc` can still serve different caller-defined GC types because exact structural type and collector-domain state belong to the active import binding and instance, not to one shared function identity.
 
+## Execution serialization
+
+Facet instance state uses one mutex to protect its handle table and mutable resource metadata. Some host operations may block after resolving that state. The current integration relies on Wago's per-instance public-call serialization and callback-scoped caller identity so unrelated public invocations cannot concurrently execute the same Facet instance state.
+
+If Wago later permits independent concurrent guest activations of the same instance, `wago-facet` must split handle-table synchronization from blocking descriptor and network operations before enabling that execution mode. This assumption is an explicit runtime contract, not an accidental data-race defense.
+
 ## Conformance evidence
 
-The pinned Facet 0.1 suite now passes through this integration:
+The pinned Facet 0.1 suite runs on both supported Linux architectures:
 
 ```text
 137 / 137 standard WAST tests   PASS
@@ -102,4 +136,4 @@ The pinned Facet 0.1 suite now passes through this integration:
 0 timeouts
 ```
 
-See [`../tests/conformance/README.md`](../tests/conformance/README.md) for the executable gate.
+The same complete gate runs on Linux/amd64 and Linux/arm64 in CI. See [`../tests/conformance/README.md`](../tests/conformance/README.md) for the executable gate.
