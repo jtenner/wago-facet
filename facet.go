@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 
 	wago "github.com/wago-org/wago"
@@ -29,8 +28,11 @@ const (
 	CapStdinRead       wago.Capability = "facet.stdio.read"
 	CapStdoutWrite     wago.Capability = "facet.stdio.write"
 	CapFDManage        wago.Capability = "facet.fd.manage"
+	CapFDRead          wago.Capability = "facet.fd.read"
+	CapFDWrite         wago.Capability = "facet.fd.write"
 	CapFilesystemRead  wago.Capability = "facet.filesystem.read"
 	CapFilesystemWrite wago.Capability = "facet.filesystem.write"
+	CapFilesystemOpen  wago.Capability = "facet.filesystem.open"
 	CapNetwork         wago.Capability = "facet.network"
 	CapPoll            wago.Capability = "facet.poll"
 )
@@ -68,12 +70,13 @@ func Provider() wago.PluginProvider {
 }
 
 type Plugin struct {
-	cfg       Config
-	arguments *wago.GuestArgumentsAccess
-	callers   *wago.CallerResolver
-	states    *stateStore
-	raw       *instanceState
-	clockBase time.Time
+	cfg          Config
+	arguments    *wago.GuestArgumentsAccess
+	callers      *wago.CallerResolver
+	states       *stateStore
+	raw          *instanceState
+	preopenFDs   []int
+	clockBase    time.Time
 }
 
 func (p *Plugin) Register(reg *wago.Registrar) error {
@@ -159,24 +162,23 @@ func (p *Plugin) start(ctx context.Context) error {
 		return err
 	}
 	p.cfg.Args = args
-	for _, preopen := range p.cfg.Preopens {
-		info, err := os.Stat(preopen.Host)
-		if err != nil {
-			return fmt.Errorf("facet preopen %q: %w", preopen.Guest, err)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("facet preopen %q host path is not a directory", preopen.Guest)
-		}
+	preopenFDs, err := pinPreopens(p.cfg.Preopens)
+	if err != nil {
+		return err
 	}
+	p.preopenFDs = preopenFDs
 	p.clockBase = time.Now()
-	p.states = newStateStore(p.cfg)
+	p.states = newStateStore(p.cfg, p.preopenFDs)
 	return nil
 }
 
 func (p *Plugin) stop(context.Context) error {
 	if p.states != nil {
 		p.states.closeAll()
+		p.states = nil
 	}
+	closePinnedPreopens(p.preopenFDs)
+	p.preopenFDs = nil
 	return nil
 }
 
@@ -206,19 +208,13 @@ func (p *Plugin) monotonicNow() uint64 {
 	return uint64(d)
 }
 
-// Imports returns one low-level, single-instance Facet import bundle. It does
-// not participate in Wago plugin policy or lifecycle. Callback-scoped indexed
-// memory and GC-array imports are intentionally available only through Provider,
-// because a static HostModule cannot supply Wago's GuestStorageHostModule view.
-// Call Imports separately for every guest instance.
+// Imports returns one low-level, single-instance Facet import map.
+//
+// Deprecated: use NewInstanceImports and call Close on the returned bundle.
+// Imports cannot expose an ownership handle for host descriptors and other
+// resources created by guest calls.
 func Imports(cfg Config) wago.Imports {
-	cfg = normalizeConfig(cfg)
-	p := &Plugin{cfg: cfg, raw: newInstanceState(cfg), clockBase: time.Now()}
-	out := make(wago.Imports)
-	for _, b := range p.bindings() {
-		out[Module+"."+b.name] = b.fn
-	}
-	return out
+	return mustLegacyImports(cfg)
 }
 
 func MarshalConfig(cfg any) (json.RawMessage, error) {
@@ -248,8 +244,11 @@ var guestCapabilities = []guestCapability{
 	{CapStdinRead, "obtain the configured standard-input descriptor"},
 	{CapStdoutWrite, "obtain configured standard-output and standard-error descriptors"},
 	{CapFDManage, "inspect and manage Facet descriptor resources"},
+	{CapFDRead, "read from an already-authorized Facet descriptor"},
+	{CapFDWrite, "write to an already-authorized Facet descriptor"},
 	{CapFilesystemRead, "inspect configured filesystem preopens and directory entries"},
-	{CapFilesystemWrite, "perform descriptor mutations permitted by configured rights"},
+	{CapFilesystemWrite, "perform filesystem namespace mutations permitted by configured rights"},
+	{CapFilesystemOpen, "open filesystem resources; per-call Facet rights decide whether the open may mutate the namespace"},
 	{CapNetwork, "create and manage IPv4 and IPv6 sockets"},
 	{CapPoll, "wait for descriptor and monotonic-timer readiness"},
 }
