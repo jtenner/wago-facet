@@ -1,12 +1,14 @@
 package facet
 
 import (
+	"context"
 	"math"
 	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
 
+	wago "github.com/wago-org/wago"
 	"golang.org/x/sys/unix"
 )
 
@@ -158,11 +160,19 @@ func TestDNSNameRequiresASCIIWithoutNUL(t *testing.T) {
 	}
 }
 
+func TestDNSLookupBudgetIsFinite(t *testing.T) {
+	if dnsLookupTimeout <= 0 {
+		t.Fatalf("DNS lookup timeout must be finite and positive, got %v", dnsLookupTimeout)
+	}
+}
+
 func TestPortableErrnoMappings(t *testing.T) {
 	cases := []struct {
 		err  error
 		want int32
 	}{
+		{context.Canceled, ErrCanceled},
+		{context.DeadlineExceeded, ErrTimedOut},
 		{syscall.EIO, ErrIO},
 		{syscall.ENOMEM, ErrNoMemory},
 		{syscall.EOVERFLOW, ErrOverflow},
@@ -188,5 +198,42 @@ func TestReleaseFilesystemFlagRules(t *testing.T) {
 	}
 	if _, code := openFlagsToUnix(OpenDirectory|OpenCreate, RightWrite); code != ErrInvalid {
 		t.Fatalf("directory+create = %d", code)
+	}
+}
+
+func TestFacetRequiresInstantiationSignatureValidation(t *testing.T) {
+	for _, req := range Definition().Authorities {
+		if req.Name != wago.AuthorityInstanceInstantiateIntercept {
+			continue
+		}
+		if req.Mode != wago.AuthorityRequired {
+			t.Fatalf("instantiation interceptor authority mode = %v, want required", req.Mode)
+		}
+		return
+	}
+	t.Fatal("Facet definition does not request the instantiation interceptor")
+}
+
+func TestCanonicalFacetArrayParameterShape(t *testing.T) {
+	valid := wago.ValueTypeDescriptor{
+		Kind: wago.ValueTypeReference,
+		Ref: wago.ReferenceTypeDescriptor{
+			Heap: wago.HeapTypeDescriptor{Abstract: wago.AbstractHeapArray},
+		},
+	}
+	if !canonicalFacetArrayParameter(valid) {
+		t.Fatal("canonical non-null abstract array reference was rejected")
+	}
+	invalid := []wago.ValueTypeDescriptor{
+		{Kind: wago.ValueTypeReference, Ref: wago.ReferenceTypeDescriptor{Nullable: true, Heap: wago.HeapTypeDescriptor{Abstract: wago.AbstractHeapArray}}},
+		{Kind: wago.ValueTypeReference, Ref: wago.ReferenceTypeDescriptor{Exact: true, Heap: wago.HeapTypeDescriptor{Abstract: wago.AbstractHeapArray}}},
+		{Kind: wago.ValueTypeReference, Ref: wago.ReferenceTypeDescriptor{Heap: wago.HeapTypeDescriptor{Abstract: wago.AbstractHeapAny}}},
+		{Kind: wago.ValueTypeReference, Ref: wago.ReferenceTypeDescriptor{Heap: wago.HeapTypeDescriptor{Defined: true, TypeIndex: 0}}},
+		{Kind: wago.ValueTypeI32},
+	}
+	for i, typ := range invalid {
+		if canonicalFacetArrayParameter(typ) {
+			t.Fatalf("non-canonical array parameter shape %d was accepted: %#v", i, typ)
+		}
 	}
 }
