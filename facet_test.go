@@ -51,14 +51,14 @@ func TestDefinition(t *testing.T) {
 		case wago.AuthorityHostImportDefine:
 			foundImports = len(req.Scope.Modules) == 1 && req.Scope.Modules[0] == Module
 		case wago.AuthorityInstanceInstantiateIntercept:
-			foundInstantiationValidation = req.Mode == wago.AuthorityOptional
+			foundInstantiationValidation = req.Mode == wago.AuthorityRequired
 		}
 	}
 	if !foundImports {
 		t.Fatal("host.import.define is not scoped exactly to facet")
 	}
 	if !foundInstantiationValidation {
-		t.Fatal("instance.instantiate.intercept is not declared optional")
+		t.Fatal("instance.instantiate.intercept is not declared required")
 	}
 	if Provider().New == nil {
 		t.Fatal("Provider.New is nil")
