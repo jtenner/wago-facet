@@ -10,46 +10,6 @@ permissions:
   contents: read
 
 jobs:
-  patch-rights-adapter:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: agent/facet-guest-storage
-          fetch-depth: 0
-      - name: Preserve omitted manifest rights
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("conformance_test.go")
-          text = p.read_text()
-          old = '''func facetManifestRights(rights []string) ([]string, error) {
-          \tout := make([]string, 0, len(rights))
-          '''
-          new = '''func facetManifestRights(rights []string) ([]string, error) {
-          \tif rights == nil {
-          \t\treturn nil, nil
-          \t}
-          \tout := make([]string, 0, len(rights))
-          '''
-          if new not in text:
-              if old not in text:
-                  raise SystemExit("facetManifestRights anchor not found")
-              p.write_text(text.replace(old, new, 1))
-          PY
-          if git diff --quiet -- conformance_test.go; then
-            exit 0
-          fi
-          gofmt -w conformance_test.go
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add conformance_test.go
-          git commit -m "test: preserve omitted preopen rights in conformance adapter"
-          git push origin HEAD:agent/facet-guest-storage
-
   test:
     runs-on: ubuntu-latest
     steps:
