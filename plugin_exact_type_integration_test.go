@@ -77,6 +77,24 @@ func callerTypedArrayImportModule(storage byte) []byte {
 	)
 }
 
+func canonicalArrayParameterImportModule(nullable bool) []byte {
+	// random_fill_array_i8 canonically takes (ref array), i64, i64. Wago's
+	// compact registration ABI represents both (ref array) and (ref null array)
+	// as ValAnyRef, so this specifically exercises the structural interceptor.
+	refPrefix := byte(0x64) // ref
+	if nullable {
+		refPrefix = 0x63 // ref null
+	}
+	funcType := []byte{0x60, 0x03, refPrefix, 0x6a, 0x7e, 0x7e, 0x02, 0x7e, 0x7f}
+	importEntry := append(wasmtest.Name(Module), wasmtest.Name("random_fill_array_i8")...)
+	importEntry = append(importEntry, 0x00) // function import
+	importEntry = append(importEntry, wasmtest.ULEB(0)...)
+	return wasmtest.Module(
+		wasmtest.Section(1, wasmtest.Vec(funcType)),
+		wasmtest.Section(2, wasmtest.Vec(importEntry)),
+	)
+}
+
 func newFacetIntegrationRuntime(t *testing.T) *wago.Runtime {
 	t.Helper()
 	cfg := wago.NewRuntimeConfig().WithCoreFeatures(wago.CoreFeaturesV3)
@@ -140,5 +158,32 @@ func TestCallerTypedArrayImportRejectsWrongStorageBeforeStart(t *testing.T) {
 	if inst, err := rt.Instantiate(context.Background(), mod); err == nil {
 		inst.Close()
 		t.Fatal("wrong caller-selected storage type unexpectedly instantiated")
+	}
+}
+
+func TestCanonicalArrayParameterInstantiates(t *testing.T) {
+	rt := newFacetIntegrationRuntime(t)
+	mod, err := rt.Compile(canonicalArrayParameterImportModule(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mod.Close()
+	inst, err := rt.Instantiate(context.Background(), mod)
+	if err != nil {
+		t.Fatalf("canonical (ref array) Facet import failed instantiation: %v", err)
+	}
+	defer inst.Close()
+}
+
+func TestNullableArrayParameterRejectedBeforeStart(t *testing.T) {
+	rt := newFacetIntegrationRuntime(t)
+	mod, err := rt.Compile(canonicalArrayParameterImportModule(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mod.Close()
+	if inst, err := rt.Instantiate(context.Background(), mod); err == nil {
+		inst.Close()
+		t.Fatal("non-canonical (ref null array) Facet parameter unexpectedly instantiated")
 	}
 }
