@@ -75,13 +75,13 @@ type stdioResource struct {
 type instanceState struct {
 	mu sync.Mutex
 
-	cfg             Config
-	preopenFDs      []int
-	ownsPreopenFDs  bool
-	nextHandle      uint32
-	handles         map[uint32]*handleEntry
-	stdioIDs        [3]uint32
-	preopenIDs      []uint32
+	cfg            Config
+	preopenFDs     []int
+	ownsPreopenFDs bool
+	nextHandle     uint32
+	handles        map[uint32]*handleEntry
+	stdioIDs       [3]uint32
+	preopenIDs     []uint32
 }
 
 func newInstanceState(cfg Config, pinned ...[]int) *instanceState {
