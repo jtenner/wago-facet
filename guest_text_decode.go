@@ -10,9 +10,9 @@ import (
 )
 
 // decodeTextBytes converts one Facet text representation into the host's native
-// byte-string form. Linux path and DNS namespaces are byte strings, so WTF mode
-// maps U+DC80..U+DCFF back to the corresponding non-UTF-8 byte. Other unpaired
-// surrogate sentinels cannot be represented losslessly in that namespace.
+// byte-string form. Linux path namespaces are byte strings, so WTF mode maps
+// U+DC80..U+DCFF back to the corresponding non-UTF-8 byte. DNS performs an
+// additional ASCII-only validation after decoding.
 func decodeTextBytes(raw []byte, width textWidth, wtf int32) (string, int32) {
 	if !validWTF(wtf) {
 		return "", ErrInvalid
@@ -147,6 +147,9 @@ func readGuestTextMemory(m wago.HostModule, width textWidth, addressType wago.Gu
 	if !validWTF(wtf) {
 		return "", ErrInvalid
 	}
+	if units > maxTextUnits {
+		return "", ErrQuota
+	}
 	elementBytes, code := textElementBytes(width)
 	if code != ErrOK {
 		return "", code
@@ -169,6 +172,9 @@ func readGuestTextMemory(m wago.HostModule, width textWidth, addressType wago.Gu
 func readGuestTextArray(m wago.HostModule, width textWidth, slot uint64, offset, units uint32, wtf int32) (string, int32) {
 	if !validWTF(wtf) {
 		return "", ErrInvalid
+	}
+	if uint64(units) > maxTextUnits {
+		return "", ErrQuota
 	}
 	expected, code := textArrayStorage(width)
 	if code != ErrOK {
@@ -203,6 +209,18 @@ func validatePathText(value string) int32 {
 	}
 	if value == "" {
 		return ErrInvalid
+	}
+	return ErrOK
+}
+
+func validateDNSName(value string) int32 {
+	if value == "" || len(value) > 253 {
+		return ErrInvalid
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] == 0 || value[i] > 0x7f {
+			return ErrInvalid
+		}
 	}
 	return ErrOK
 }
