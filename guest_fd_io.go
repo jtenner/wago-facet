@@ -179,10 +179,10 @@ func (p *Plugin) fdIOBindings() []binding {
 	i64 := wago.ValI64
 	anyref := wago.ValAnyRef
 	out := []binding{
-		{"fd_read_mem32", p.fdMemoryIOHost(fdIORead, wago.GuestMemory32), []wago.ValType{i32, i32, i32, i32}, []wago.ValType{i64, i32}, CapFilesystemRead, "read sequential descriptor bytes into indexed Memory32"},
-		{"fd_read_mem64", p.fdMemoryIOHost(fdIORead, wago.GuestMemory64), []wago.ValType{i32, i32, i64, i64}, []wago.ValType{i64, i32}, CapFilesystemRead, "read sequential descriptor bytes into indexed Memory64"},
-		{"fd_write_mem32", p.fdMemoryIOHost(fdIOWrite, wago.GuestMemory32), []wago.ValType{i32, i32, i32, i32}, []wago.ValType{i64, i32}, CapFilesystemWrite, "write sequential descriptor bytes from indexed Memory32"},
-		{"fd_write_mem64", p.fdMemoryIOHost(fdIOWrite, wago.GuestMemory64), []wago.ValType{i32, i32, i64, i64}, []wago.ValType{i64, i32}, CapFilesystemWrite, "write sequential descriptor bytes from indexed Memory64"},
+		{"fd_read_mem32", p.fdMemoryIOHost(fdIORead, wago.GuestMemory32), []wago.ValType{i32, i32, i32, i32}, []wago.ValType{i64, i32}, CapFDRead, "read sequential descriptor bytes into indexed Memory32"},
+		{"fd_read_mem64", p.fdMemoryIOHost(fdIORead, wago.GuestMemory64), []wago.ValType{i32, i32, i64, i64}, []wago.ValType{i64, i32}, CapFDRead, "read sequential descriptor bytes into indexed Memory64"},
+		{"fd_write_mem32", p.fdMemoryIOHost(fdIOWrite, wago.GuestMemory32), []wago.ValType{i32, i32, i32, i32}, []wago.ValType{i64, i32}, CapFDWrite, "write sequential descriptor bytes from indexed Memory32"},
+		{"fd_write_mem64", p.fdMemoryIOHost(fdIOWrite, wago.GuestMemory64), []wago.ValType{i32, i32, i64, i64}, []wago.ValType{i64, i32}, CapFDWrite, "write sequential descriptor bytes from indexed Memory64"},
 	}
 	for _, spec := range []struct {
 		suffix  string
@@ -195,8 +195,8 @@ func (p *Plugin) fdIOBindings() []binding {
 		{"v128", wago.GuestGCArrayV128},
 	} {
 		out = append(out,
-			binding{"fd_read_array_" + spec.suffix, p.fdArrayIOHost(fdIORead, spec.storage), []wago.ValType{i32, anyref, i64, i64}, []wago.ValType{i64, i32}, CapFilesystemRead, "read sequential descriptor bytes into a mutable GC array"},
-			binding{"fd_write_array_" + spec.suffix, p.fdArrayIOHost(fdIOWrite, spec.storage), []wago.ValType{i32, anyref, i64, i64}, []wago.ValType{i64, i32}, CapFilesystemWrite, "write sequential descriptor bytes from a GC array"},
+			binding{"fd_read_array_" + spec.suffix, p.fdArrayIOHost(fdIORead, spec.storage), []wago.ValType{i32, anyref, i64, i64}, []wago.ValType{i64, i32}, CapFDRead, "read sequential descriptor bytes into a mutable GC array"},
+			binding{"fd_write_array_" + spec.suffix, p.fdArrayIOHost(fdIOWrite, spec.storage), []wago.ValType{i32, anyref, i64, i64}, []wago.ValType{i64, i32}, CapFDWrite, "write sequential descriptor bytes from a GC array"},
 		)
 	}
 	return out
