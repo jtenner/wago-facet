@@ -237,3 +237,40 @@ func TestCanonicalFacetArrayParameterShape(t *testing.T) {
 		}
 	}
 }
+
+func TestPoisonedPositionalFDIsRemovedFromPollSets(t *testing.T) {
+	fd, err := unix.Open(filepath.Join(t.TempDir(), "poisoned"), unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := newInstanceState(Config{})
+	defer state.closeAll()
+	fileID, code := state.alloc(&handleEntry{kind: handleFile, rights: RightWrite, flags: FDAppend, file: &fileResource{fd: fd}})
+	if code != ErrOK {
+		_ = unix.Close(fd)
+		t.Fatalf("allocate file handle = %d", code)
+	}
+	poll := newPollSet()
+	pollID, code := state.alloc(&handleEntry{kind: handlePoll, poll: poll})
+	if code != ErrOK {
+		t.Fatalf("allocate poll handle = %d", code)
+	}
+	_ = pollID
+	poll.regs[fileID] = pollRegistration{events: PollWritable}
+
+	p := &Plugin{raw: state}
+	transferred, code := p.withPositionalFD(nil, uint64(fileID), fdIOWrite, func(h *handleEntry) (uint64, int32) {
+		_ = h.file.close()
+		h.kind = 0 // model pwriteExplicitOffset restore failure after a partial write
+		return 1, ErrOK
+	})
+	if transferred != 1 || code != ErrOK {
+		t.Fatalf("poisoned positional result = (%d, %d), want (1, ERR_OK)", transferred, code)
+	}
+	if _, ok := state.handles[fileID]; ok {
+		t.Fatal("poisoned positional descriptor remained in the handle table")
+	}
+	if _, ok := poll.regs[fileID]; ok {
+		t.Fatal("poisoned positional descriptor remained registered in a poll set")
+	}
+}
