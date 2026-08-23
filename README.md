@@ -8,9 +8,9 @@ This repository follows Facet 0.1.
 
 ## Status
 
-The plugin is experimental.
+The plugin is experimental while the Facet 0.1 release branch is reviewed.
 
-The Runtime plugin path implements the canonical Facet 0.1 import surface. The inventory test requires exactly **261** Facet imports with no duplicate names.
+The Runtime plugin path implements the canonical Facet 0.1 import surface. The inventory test requires exactly **261** Facet imports with no duplicate names. Wago's normal registration check verifies scalar ABI categories, and the required instantiation interceptor additionally verifies Facet's structural GC-reference signatures before guest code starts.
 
 Wago callback-scoped guest-storage APIs provide the representation-sensitive operations that Facet needs:
 
@@ -24,15 +24,13 @@ Wago callback-scoped guest-storage APIs provide the representation-sensitive ope
 
 GC references remain opaque Wago tokens. `wago-facet` does not interpret collector references or object pointers. It resolves them only through Wago's callback-scoped guest-storage APIs.
 
-The preferred integration is `Provider()` through Wago's plugin system. Some caller-typed allocating imports require Wago's optional `instance.instantiate.intercept` authority so the plugin can reject an incompatible caller-selected result type before the instance starts.
-
-The low-level `Imports(Config)` API intentionally exposes only the subset that does not require Runtime callback-scoped guest storage or caller-type metadata. Use `Provider()` for complete Facet support.
+The preferred integration is `Provider()` through Wago's plugin system. The plugin requires Wago's `instance.instantiate.intercept` authority so a module with a non-canonical structural Facet import is rejected during instantiation. Caller-allocated string and readlink results remain templates: the importing module selects a concrete nullable array type with the required element storage class.
 
 ## Implemented surface
 
 The Runtime plugin path includes:
 
-- ABI version, process exit, yield, and opaque handle lifecycle;
+- ABI version, process exit, yield, and opaque resource lifecycle;
 - stdin, stdout, and stderr descriptors;
 - arguments and environment for UTF-8, UTF-16, and UTF-32;
 - strict and WTF text handling;
@@ -54,7 +52,7 @@ Facet uses normal Core WebAssembly linking for feature detection. The plugin doe
 
 ## Conformance
 
-`wago-facet` runs the normative Facet 0.1 suite from a pinned `facet-spec` revision.
+`wago-facet` runs the normative Facet 0.1 suite from a pinned `facet-spec` revision on both Linux/amd64 and Linux/arm64.
 
 The current gate is:
 
@@ -105,7 +103,7 @@ Example:
 
 The `~` name has no special ABI behavior. It is an ordinary Facet preopen display name.
 
-If `rights` is omitted, a preopen receives `stat`, `path-open`, and `dir-iterate` rights.
+If `rights` is omitted, a preopen receives `stat`, `path-open`, and `dir-iterate` rights. An explicit `"rights": []` grants zero Facet rights.
 
 ## Guest capabilities
 
@@ -120,13 +118,22 @@ facet.process.exit
 facet.stdio.read
 facet.stdio.write
 facet.fd.manage
+facet.fd.read
+facet.fd.write
 facet.filesystem.read
 facet.filesystem.write
+facet.filesystem.open
 facet.network
 facet.poll
 ```
 
 An embedder can deny these capabilities through normal Wago policy.
+
+## Direct low-level use
+
+`Provider()` is the complete and preferred integration.
+
+Low-level embedders that need only the scalar/resource subset can call `NewInstanceImports(Config)`. The returned `InstanceImports` owns the import map and all backing host descriptors. Call `Close` after the guest instance is finished. There is intentionally no ownership-free `Imports(Config)` helper because such an API cannot safely release guest-created resources or pinned preopen descriptors.
 
 ## Development
 
