@@ -77,6 +77,8 @@ type Plugin struct {
 	raw        *instanceState
 	preopenFDs []int
 	clockBase  time.Time
+	dnsCtx     context.Context
+	dnsCancel  context.CancelFunc
 }
 
 func (p *Plugin) Register(reg *wago.Registrar) error {
@@ -163,11 +165,17 @@ func (p *Plugin) start(ctx context.Context) error {
 	}
 	p.preopenFDs = preopenFDs
 	p.clockBase = time.Now()
+	p.dnsCtx, p.dnsCancel = context.WithCancel(context.Background())
 	p.states = newStateStore(p.cfg, p.preopenFDs)
 	return nil
 }
 
 func (p *Plugin) stop(context.Context) error {
+	if p.dnsCancel != nil {
+		p.dnsCancel()
+		p.dnsCancel = nil
+		p.dnsCtx = nil
+	}
 	if p.states != nil {
 		p.states.closeAll()
 		p.states = nil
