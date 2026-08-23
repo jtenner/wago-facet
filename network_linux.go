@@ -146,6 +146,36 @@ func sameAddress(a, b socketAddress) bool {
 	return a.family == b.family && a.hi == b.hi && a.lo == b.lo && a.port == b.port && a.scope == b.scope
 }
 
+func nonblockingConnectCompletion(fd int) int32 {
+	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLOUT | unix.POLLERR | unix.POLLHUP}}
+	n, err := unix.Poll(fds, 0)
+	if err != nil {
+		return errorCode(err)
+	}
+	if n == 0 {
+		return ErrAgain
+	}
+	revents := fds[0].Revents
+	if revents&unix.POLLNVAL != 0 {
+		return ErrBadHandle
+	}
+	if revents&(unix.POLLOUT|unix.POLLERR|unix.POLLHUP) == 0 {
+		return ErrAgain
+	}
+	soerr, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_ERROR)
+	if err != nil {
+		return errorCode(err)
+	}
+	if soerr == 0 {
+		return ErrOK
+	}
+	e := syscall.Errno(soerr)
+	if errors.Is(e, syscall.EINPROGRESS) || errors.Is(e, syscall.EALREADY) || errors.Is(e, syscall.EAGAIN) {
+		return ErrAgain
+	}
+	return errorCode(e)
+}
+
 func (p *Plugin) socketOpenHost(m wago.HostModule, params, results []uint64) {
 	zeroResults(results)
 	if len(params) != 4 || len(results) < 2 {
@@ -271,22 +301,18 @@ func (p *Plugin) socketConnectHost(m wago.HostModule, params, results []uint64) 
 			if !sock.hasPending || !sameAddress(sock.pending, address) {
 				return ErrBusy
 			}
-			soerr, err := unix.GetsockoptInt(sock.fd, unix.SOL_SOCKET, unix.SO_ERROR)
-			if err != nil {
-				return errorCode(err)
+			completion := nonblockingConnectCompletion(sock.fd)
+			if completion == ErrAgain {
+				return ErrAgain
 			}
-			if soerr == 0 {
+			if completion == ErrOK {
 				sock.state = socketConnected
 				sock.hasPending = false
 				return ErrOK
 			}
-			e := syscall.Errno(soerr)
-			if errors.Is(e, syscall.EINPROGRESS) || errors.Is(e, syscall.EALREADY) || errors.Is(e, syscall.EAGAIN) {
-				return ErrAgain
-			}
 			sock.state = socketFailed
 			sock.hasPending = false
-			return errorCode(e)
+			return completion
 		case socketFailed:
 			return ErrNotConnected
 		}
