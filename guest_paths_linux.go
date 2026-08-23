@@ -30,7 +30,7 @@ func (f *fileResource) pollFD() (int, bool) {
 	return f.fd, true
 }
 
-func pathCode(err error) int32 {
+func resolvePathCode(err error) int32 {
 	if err == nil {
 		return ErrOK
 	}
@@ -61,7 +61,7 @@ func openBeneath(dirfd int, name string, flags int, mode uint32) (int, int32) {
 	how := &unix.OpenHow{Flags: uint64(flags | unix.O_CLOEXEC), Mode: uint64(mode), Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS}
 	fd, err := unix.Openat2(dirfd, name, how)
 	if err != nil {
-		return -1, pathCode(err)
+		return -1, resolvePathCode(err)
 	}
 	return fd, ErrOK
 }
@@ -108,6 +108,9 @@ func openFlagsToUnix(flags uint32, requested uint64) (int, int32) {
 		return 0, ErrInvalid
 	}
 	if flags&OpenExclusive != 0 && flags&OpenCreate == 0 {
+		return 0, ErrInvalid
+	}
+	if flags&OpenDirectory != 0 && flags&(OpenCreate|OpenTruncate) != 0 {
 		return 0, ErrInvalid
 	}
 	if flags&OpenTruncate != 0 && requested&RightWrite == 0 {
@@ -415,7 +418,7 @@ func (p *Plugin) createDirDecoded(m wago.HostModule, directory uint64, value str
 		return code
 	}
 	defer unix.Close(parent)
-	return pathCode(unix.Mkdirat(parent, leaf, 0o777))
+	return errorCode(unix.Mkdirat(parent, leaf, 0o777))
 }
 
 func (p *Plugin) createDirMemoryHost(width textWidth, addressType wago.GuestMemoryAddressType) wago.HostFunc {
@@ -485,7 +488,7 @@ func (p *Plugin) removeDecoded(m wago.HostModule, directory uint64, value string
 	if flags == RemoveDirectory {
 		unlinkFlags = unix.AT_REMOVEDIR
 	}
-	return pathCode(unix.Unlinkat(parent, leaf, unlinkFlags))
+	return errorCode(unix.Unlinkat(parent, leaf, unlinkFlags))
 }
 
 func (p *Plugin) removeMemoryHost(width textWidth, addressType wago.GuestMemoryAddressType) wago.HostFunc {
@@ -577,7 +580,7 @@ func (p *Plugin) renameDecoded(m wago.HostModule, srcDir uint64, src string, dst
 		return code
 	}
 	defer unix.Close(dstParent)
-	return pathCode(unix.Renameat2(srcParent, srcLeaf, dstParent, dstLeaf, renameFlags))
+	return errorCode(unix.Renameat2(srcParent, srcLeaf, dstParent, dstLeaf, renameFlags))
 }
 
 func (p *Plugin) renameMemoryHost(width textWidth, addressType wago.GuestMemoryAddressType) wago.HostFunc {
@@ -667,9 +670,9 @@ func (p *Plugin) pathBindings() []binding {
 		width  textWidth
 	}{{"i8", textI8}, {"i16", textI16}, {"i32", textI32}} {
 		out = append(out,
-			binding{"path_open_mem32_" + spec.suffix, p.pathOpenMemoryHost(spec.width, wago.GuestMemory32), []wago.ValType{i32, i32, i32, i32, i32, i32, i64}, []wago.ValType{i32, i32}, CapFilesystemWrite, "open a path beneath a directory capability from Memory32"},
-			binding{"path_open_mem64_" + spec.suffix, p.pathOpenMemoryHost(spec.width, wago.GuestMemory64), []wago.ValType{i32, i32, i64, i64, i32, i32, i64}, []wago.ValType{i32, i32}, CapFilesystemWrite, "open a path beneath a directory capability from Memory64"},
-			binding{"path_open_array_" + spec.suffix, p.pathOpenArrayHost(spec.width), []wago.ValType{i32, anyref, i32, i32, i32, i32, i64}, []wago.ValType{i32, i32}, CapFilesystemWrite, "open a path beneath a directory capability from a GC text array"},
+			binding{"path_open_mem32_" + spec.suffix, p.pathOpenMemoryHost(spec.width, wago.GuestMemory32), []wago.ValType{i32, i32, i32, i32, i32, i32, i64}, []wago.ValType{i32, i32}, CapFilesystemOpen, "open a path beneath a directory capability from Memory32"},
+			binding{"path_open_mem64_" + spec.suffix, p.pathOpenMemoryHost(spec.width, wago.GuestMemory64), []wago.ValType{i32, i32, i64, i64, i32, i32, i64}, []wago.ValType{i32, i32}, CapFilesystemOpen, "open a path beneath a directory capability from Memory64"},
+			binding{"path_open_array_" + spec.suffix, p.pathOpenArrayHost(spec.width), []wago.ValType{i32, anyref, i32, i32, i32, i32, i64}, []wago.ValType{i32, i32}, CapFilesystemOpen, "open a path beneath a directory capability from a GC text array"},
 			binding{"path_stat_mem32_" + spec.suffix, p.pathStatMemoryHost(spec.width, wago.GuestMemory32), []wago.ValType{i32, i32, i32, i32, i32, i32}, statResults, CapFilesystemRead, "stat a capability-beneath Memory32 path"},
 			binding{"path_stat_mem64_" + spec.suffix, p.pathStatMemoryHost(spec.width, wago.GuestMemory64), []wago.ValType{i32, i32, i64, i64, i32, i32}, statResults, CapFilesystemRead, "stat a capability-beneath Memory64 path"},
 			binding{"path_stat_array_" + spec.suffix, p.pathStatArrayHost(spec.width), []wago.ValType{i32, anyref, i32, i32, i32, i32}, statResults, CapFilesystemRead, "stat a capability-beneath GC-array path"},
