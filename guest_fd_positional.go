@@ -49,9 +49,13 @@ func pwriteExplicitOffset(h *handleEntry, buf []byte, offset int64) (int, error)
 	n, writeErr := unix.Pwrite(h.file.fd, buf, offset)
 	_, restoreErr := unix.FcntlInt(uintptr(h.file.fd), unix.F_SETFL, flags)
 	if restoreErr != nil {
+		// The kernel descriptor no longer agrees with the logical FDAppend state.
+		// Make the Facet handle unusable before any later operation can observe
+		// divergent append semantics. A visible partial write still reports its
+		// byte count according to Facet partial-I/O rules.
+		_ = h.file.close()
+		h.kind = 0
 		if n > 0 {
-			// The write is already externally visible. Preserve Facet partial-I/O
-			// semantics; the next descriptor operation can surface the host failure.
 			return n, nil
 		}
 		return 0, restoreErr
@@ -156,18 +160,18 @@ func (p *Plugin) fdPositionalArrayHost(op fdIOOperation, storage wago.GuestGCArr
 func (p *Plugin) positionalBindings() []binding {
 	i32, i64, anyref := wago.ValI32, wago.ValI64, wago.ValAnyRef
 	out := []binding{
-		{"fd_pread_mem32", p.fdPositionalMemoryHost(fdIORead, wago.GuestMemory32), []wago.ValType{i32, i64, i32, i32, i32}, []wago.ValType{i64, i32}, CapFilesystemRead, "read file bytes at an explicit offset into Memory32"},
-		{"fd_pread_mem64", p.fdPositionalMemoryHost(fdIORead, wago.GuestMemory64), []wago.ValType{i32, i64, i32, i64, i64}, []wago.ValType{i64, i32}, CapFilesystemRead, "read file bytes at an explicit offset into Memory64"},
-		{"fd_pwrite_mem32", p.fdPositionalMemoryHost(fdIOWrite, wago.GuestMemory32), []wago.ValType{i32, i64, i32, i32, i32}, []wago.ValType{i64, i32}, CapFilesystemWrite, "write file bytes at an explicit offset from Memory32"},
-		{"fd_pwrite_mem64", p.fdPositionalMemoryHost(fdIOWrite, wago.GuestMemory64), []wago.ValType{i32, i64, i32, i64, i64}, []wago.ValType{i64, i32}, CapFilesystemWrite, "write file bytes at an explicit offset from Memory64"},
+		{"fd_pread_mem32", p.fdPositionalMemoryHost(fdIORead, wago.GuestMemory32), []wago.ValType{i32, i64, i32, i32, i32}, []wago.ValType{i64, i32}, CapFDRead, "read file bytes at an explicit offset into Memory32"},
+		{"fd_pread_mem64", p.fdPositionalMemoryHost(fdIORead, wago.GuestMemory64), []wago.ValType{i32, i64, i32, i64, i64}, []wago.ValType{i64, i32}, CapFDRead, "read file bytes at an explicit offset into Memory64"},
+		{"fd_pwrite_mem32", p.fdPositionalMemoryHost(fdIOWrite, wago.GuestMemory32), []wago.ValType{i32, i64, i32, i32, i32}, []wago.ValType{i64, i32}, CapFDWrite, "write file bytes at an explicit offset from Memory32"},
+		{"fd_pwrite_mem64", p.fdPositionalMemoryHost(fdIOWrite, wago.GuestMemory64), []wago.ValType{i32, i64, i32, i64, i64}, []wago.ValType{i64, i32}, CapFDWrite, "write file bytes at an explicit offset from Memory64"},
 	}
 	for _, spec := range []struct {
 		suffix  string
 		storage wago.GuestGCArrayStorage
 	}{{"i8", wago.GuestGCArrayI8}, {"i16", wago.GuestGCArrayI16}, {"i32", wago.GuestGCArrayI32}, {"i64", wago.GuestGCArrayI64}, {"v128", wago.GuestGCArrayV128}} {
 		out = append(out,
-			binding{"fd_pread_array_" + spec.suffix, p.fdPositionalArrayHost(fdIORead, spec.storage), []wago.ValType{i32, i64, anyref, i64, i64}, []wago.ValType{i64, i32}, CapFilesystemRead, "read file bytes at an explicit offset into a mutable GC array"},
-			binding{"fd_pwrite_array_" + spec.suffix, p.fdPositionalArrayHost(fdIOWrite, spec.storage), []wago.ValType{i32, i64, anyref, i64, i64}, []wago.ValType{i64, i32}, CapFilesystemWrite, "write file bytes at an explicit offset from a GC array"},
+			binding{"fd_pread_array_" + spec.suffix, p.fdPositionalArrayHost(fdIORead, spec.storage), []wago.ValType{i32, i64, anyref, i64, i64}, []wago.ValType{i64, i32}, CapFDRead, "read file bytes at an explicit offset into a mutable GC array"},
+			binding{"fd_pwrite_array_" + spec.suffix, p.fdPositionalArrayHost(fdIOWrite, spec.storage), []wago.ValType{i32, i64, anyref, i64, i64}, []wago.ValType{i64, i32}, CapFDWrite, "write file bytes at an explicit offset from a GC array"},
 		)
 	}
 	return out
