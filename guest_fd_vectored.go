@@ -76,7 +76,18 @@ func validateVectoredFD(h *handleEntry, op fdIOOperation) int32 {
 	return validateSequentialFD(h, op)
 }
 
+func addVectorBudget(total, length uint64) (uint64, int32) {
+	next, ok := checkedAdd(total, length)
+	if !ok || next > maxVectorBytes {
+		return 0, ErrQuota
+	}
+	return next, ErrOK
+}
+
 func parseMemoryIOVecs(storage wago.GuestStorage, addressType wago.GuestMemoryAddressType, tableMemory uint32, tablePointer uint64, count uint32, access wago.GuestStorageAccess) ([][]byte, int32) {
+	if count > maxIOVecs {
+		return nil, ErrQuota
+	}
 	info, err := storage.MemoryInfo(tableMemory)
 	if err != nil {
 		return nil, ErrFault
@@ -97,6 +108,7 @@ func parseMemoryIOVecs(storage wago.GuestStorage, addressType wago.GuestMemoryAd
 		return nil, ErrFault
 	}
 	buffers := make([][]byte, 0, count)
+	var total uint64
 	for i := uint32(0); i < count; i++ {
 		off := uint64(i) * entrySize
 		entry := table[off : off+entrySize]
@@ -115,6 +127,11 @@ func parseMemoryIOVecs(storage wago.GuestStorage, addressType wago.GuestMemoryAd
 			pointer = binary.LittleEndian.Uint64(entry[8:16])
 			length = binary.LittleEndian.Uint64(entry[16:24])
 		}
+		var code int32
+		total, code = addVectorBudget(total, length)
+		if code != ErrOK {
+			return nil, code
+		}
 		childInfo, err := storage.MemoryInfo(memoryIndex)
 		if err != nil {
 			return nil, ErrFault
@@ -132,6 +149,9 @@ func parseMemoryIOVecs(storage wago.GuestStorage, addressType wago.GuestMemoryAd
 }
 
 func parseGCIOVecs(storage wago.GuestStorage, slot uint64, first, count uint32, expected wago.GuestGCArrayStorage, access wago.GuestStorageAccess) ([][]byte, int32) {
+	if count > maxIOVecs {
+		return nil, ErrQuota
+	}
 	outer, err := storage.GCRef(slot)
 	if err != nil || outer.IsNull() {
 		return nil, ErrType
@@ -145,6 +165,7 @@ func parseGCIOVecs(storage wago.GuestStorage, slot uint64, first, count uint32, 
 		return nil, ErrRange
 	}
 	buffers := make([][]byte, 0, count)
+	var total uint64
 	for i := uint32(0); i < count; i++ {
 		child, err := storage.GCArrayRef(outer, first+i)
 		if err != nil || child.IsNull() {
@@ -160,6 +181,11 @@ func parseGCIOVecs(storage wago.GuestStorage, slot uint64, first, count uint32, 
 		payload, _, err := storage.GCArrayBytes(child, access)
 		if err != nil {
 			return nil, ErrType
+		}
+		var code int32
+		total, code = addVectorBudget(total, uint64(len(payload)))
+		if code != ErrOK {
+			return nil, code
 		}
 		buffers = append(buffers, payload)
 	}
@@ -193,6 +219,10 @@ func (p *Plugin) fdReadvMemoryHost(op fdIOOperation, addressType wago.GuestMemor
 			pointer = uint64(uint32(pointer))
 		}
 		count := uint32(params[3])
+		if count > maxIOVecs {
+			results[1] = uint64(uint32(ErrQuota))
+			return
+		}
 		state := p.stateFor(m)
 		state.mu.Lock()
 		defer state.mu.Unlock()
@@ -227,6 +257,11 @@ func (p *Plugin) fdReadvArrayHost(op fdIOOperation, expected wago.GuestGCArraySt
 		if len(params) != 4 || len(results) < 2 {
 			panic(wago.HostTrap{Err: errors.New("facet: fd_readv/writev array signature mismatch")})
 		}
+		count := uint32(params[3])
+		if count > maxIOVecs {
+			results[1] = uint64(uint32(ErrQuota))
+			return
+		}
 		state := p.stateFor(m)
 		state.mu.Lock()
 		defer state.mu.Unlock()
@@ -244,7 +279,7 @@ func (p *Plugin) fdReadvArrayHost(op fdIOOperation, expected wago.GuestGCArraySt
 			access = wago.GuestStorageWrite
 		}
 		n, code := withStorageForIO(m, func(storage wago.GuestStorage) (uint64, int32) {
-			buffers, c := parseGCIOVecs(storage, params[1], uint32(params[2]), uint32(params[3]), expected, access)
+			buffers, c := parseGCIOVecs(storage, params[1], uint32(params[2]), count, expected, access)
 			if c != ErrOK {
 				return 0, c
 			}
@@ -258,18 +293,18 @@ func (p *Plugin) fdReadvArrayHost(op fdIOOperation, expected wago.GuestGCArraySt
 func (p *Plugin) vectoredBindings() []binding {
 	i32, i64, anyref := wago.ValI32, wago.ValI64, wago.ValAnyRef
 	out := []binding{
-		{"fd_readv_mem32", p.fdReadvMemoryHost(fdIORead, wago.GuestMemory32), []wago.ValType{i32, i32, i32, i32}, []wago.ValType{i64, i32}, CapFilesystemRead, "read into a fully validated Memory32 iovec"},
-		{"fd_writev_mem32", p.fdReadvMemoryHost(fdIOWrite, wago.GuestMemory32), []wago.ValType{i32, i32, i32, i32}, []wago.ValType{i64, i32}, CapFilesystemWrite, "write from a fully validated Memory32 iovec"},
-		{"fd_readv_mem64", p.fdReadvMemoryHost(fdIORead, wago.GuestMemory64), []wago.ValType{i32, i32, i64, i32}, []wago.ValType{i64, i32}, CapFilesystemRead, "read into a fully validated Memory64 iovec"},
-		{"fd_writev_mem64", p.fdReadvMemoryHost(fdIOWrite, wago.GuestMemory64), []wago.ValType{i32, i32, i64, i32}, []wago.ValType{i64, i32}, CapFilesystemWrite, "write from a fully validated Memory64 iovec"},
+		{"fd_readv_mem32", p.fdReadvMemoryHost(fdIORead, wago.GuestMemory32), []wago.ValType{i32, i32, i32, i32}, []wago.ValType{i64, i32}, CapFDRead, "read into a fully validated Memory32 iovec"},
+		{"fd_writev_mem32", p.fdReadvMemoryHost(fdIOWrite, wago.GuestMemory32), []wago.ValType{i32, i32, i32, i32}, []wago.ValType{i64, i32}, CapFDWrite, "write from a fully validated Memory32 iovec"},
+		{"fd_readv_mem64", p.fdReadvMemoryHost(fdIORead, wago.GuestMemory64), []wago.ValType{i32, i32, i64, i32}, []wago.ValType{i64, i32}, CapFDRead, "read into a fully validated Memory64 iovec"},
+		{"fd_writev_mem64", p.fdReadvMemoryHost(fdIOWrite, wago.GuestMemory64), []wago.ValType{i32, i32, i64, i32}, []wago.ValType{i64, i32}, CapFDWrite, "write from a fully validated Memory64 iovec"},
 	}
 	for _, spec := range []struct {
 		suffix  string
 		storage wago.GuestGCArrayStorage
 	}{{"i8", wago.GuestGCArrayI8}, {"i16", wago.GuestGCArrayI16}, {"i32", wago.GuestGCArrayI32}, {"i64", wago.GuestGCArrayI64}, {"v128", wago.GuestGCArrayV128}} {
 		out = append(out,
-			binding{"fd_readv_array_" + spec.suffix, p.fdReadvArrayHost(fdIORead, spec.storage), []wago.ValType{i32, anyref, i32, i32}, []wago.ValType{i64, i32}, CapFilesystemRead, "read into fully validated nested GC arrays"},
-			binding{"fd_writev_array_" + spec.suffix, p.fdReadvArrayHost(fdIOWrite, spec.storage), []wago.ValType{i32, anyref, i32, i32}, []wago.ValType{i64, i32}, CapFilesystemWrite, "write from fully validated nested GC arrays"},
+			binding{"fd_readv_array_" + spec.suffix, p.fdReadvArrayHost(fdIORead, spec.storage), []wago.ValType{i32, anyref, i32, i32}, []wago.ValType{i64, i32}, CapFDRead, "read into fully validated nested GC arrays"},
+			binding{"fd_writev_array_" + spec.suffix, p.fdReadvArrayHost(fdIOWrite, spec.storage), []wago.ValType{i32, anyref, i32, i32}, []wago.ValType{i64, i32}, CapFDWrite, "write from fully validated nested GC arrays"},
 		)
 	}
 	return out
