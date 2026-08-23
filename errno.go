@@ -29,6 +29,16 @@ func errorCode(err error) int32 {
 		return ErrBadHandle
 	case errors.Is(err, syscall.EBUSY):
 		return ErrBusy
+	case errors.Is(err, syscall.EIO):
+		return ErrIO
+	case errors.Is(err, syscall.ENOMEM):
+		return ErrNoMemory
+	case errors.Is(err, syscall.EOVERFLOW):
+		return ErrOverflow
+	case errors.Is(err, syscall.ECANCELED):
+		return ErrCanceled
+	case errors.Is(err, syscall.EDQUOT):
+		return ErrQuota
 	case errors.Is(err, syscall.EISDIR):
 		return ErrIsDirectory
 	case errors.Is(err, syscall.ENOTDIR):
