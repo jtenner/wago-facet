@@ -38,6 +38,13 @@ func newPollSet() *pollSet {
 	return &pollSet{regs: make(map[uint32]pollRegistration), timers: make(map[uint32]pollTimer), nextTimer: 1}
 }
 
+func (p *pollSet) subscriptionCount() int {
+	if p == nil {
+		return 0
+	}
+	return len(p.regs) + len(p.timers)
+}
+
 func (p *Plugin) pollCreateHost(m wago.HostModule, params, results []uint64) {
 	zeroResults(results)
 	if len(params) != 0 || len(results) < 2 {
@@ -89,6 +96,10 @@ func (p *Plugin) pollAddFDHost(m wago.HostModule, params, results []uint64) {
 	}
 	if _, exists := poll.regs[fd]; exists {
 		results[0] = uint64(uint32(ErrExists))
+		return
+	}
+	if poll.subscriptionCount() >= maxPollSubscriptions {
+		results[0] = uint64(uint32(ErrQuota))
 		return
 	}
 	poll.regs[fd] = pollRegistration{events: events, userdata: params[3]}
@@ -163,6 +174,10 @@ func (p *Plugin) pollAddTimerHost(m wago.HostModule, params, results []uint64) {
 	poll, code := getPoll(state, uint32(params[0]))
 	if code != ErrOK {
 		results[1] = uint64(uint32(code))
+		return
+	}
+	if poll.subscriptionCount() >= maxPollSubscriptions {
+		results[1] = uint64(uint32(ErrQuota))
 		return
 	}
 	id := poll.nextTimer
@@ -403,7 +418,11 @@ func pollTimeoutMillis(now, target uint64) int {
 		return 0
 	}
 	delta := target - now
-	ms := (delta + uint64(time.Millisecond) - 1) / uint64(time.Millisecond)
+	unit := uint64(time.Millisecond)
+	ms := delta / unit
+	if delta%unit != 0 {
+		ms++
+	}
 	if ms > math.MaxInt32 {
 		return math.MaxInt32
 	}
