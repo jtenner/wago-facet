@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	wago "github.com/wago-org/wago"
-	"golang.org/x/sys/unix"
 )
 
 type handleKind uint8
@@ -59,6 +58,9 @@ func (h *handleEntry) close() error {
 	if h.file != nil {
 		return h.file.close()
 	}
+	if h.iter != nil {
+		return h.iter.close()
+	}
 	return nil
 }
 
@@ -73,17 +75,19 @@ type stdioResource struct {
 type instanceState struct {
 	mu sync.Mutex
 
-	cfg        Config
-	nextHandle uint32
-	handles    map[uint32]*handleEntry
-	stdioIDs   [3]uint32
-	preopenIDs []uint32
+	cfg          Config
+	preopenFDs   []int
+	nextHandle   uint32
+	handles      map[uint32]*handleEntry
+	stdioIDs     [3]uint32
+	preopenIDs   []uint32
 }
 
-func newInstanceState(cfg Config) *instanceState {
+func newInstanceState(cfg Config, preopenFDs []int) *instanceState {
 	cfg = normalizeConfig(cfg)
 	return &instanceState{
 		cfg:        cfg,
+		preopenFDs: append([]int(nil), preopenFDs...),
 		nextHandle: 1,
 		handles:    make(map[uint32]*handleEntry),
 		preopenIDs: make([]uint32, len(cfg.Preopens)),
@@ -153,6 +157,12 @@ func (s *instanceState) closeAll() {
 		_ = h.close()
 		delete(s.handles, id)
 	}
+	for i := range s.stdioIDs {
+		s.stdioIDs[i] = 0
+	}
+	for i := range s.preopenIDs {
+		s.preopenIDs[i] = 0
+	}
 }
 
 func (s *instanceState) stdio(which int) (uint32, int32) {
@@ -209,8 +219,11 @@ func (s *instanceState) preopen(index uint32) (uint32, int32) {
 		}
 		s.preopenIDs[index] = 0
 	}
+	if uint64(index) >= uint64(len(s.preopenFDs)) || s.preopenFDs[index] < 0 {
+		return 0, ErrOther
+	}
 	p := &s.cfg.Preopens[index]
-	fd, err := unix.Open(p.Host, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	fd, err := duplicatePinnedPreopen(s.preopenFDs[index])
 	if err != nil {
 		return 0, errorCode(err)
 	}
@@ -222,7 +235,7 @@ func (s *instanceState) preopen(index uint32) (uint32, int32) {
 	}
 	id, code := s.alloc(entry)
 	if code != ErrOK {
-		_ = unix.Close(fd)
+		_ = entry.close()
 		return 0, code
 	}
 	s.preopenIDs[index] = id
@@ -238,13 +251,18 @@ func (s *instanceState) removeFDFromPollSets(fd uint32) {
 }
 
 type stateStore struct {
-	mu     sync.Mutex
-	cfg    Config
-	states map[wago.InstanceIdentity]*instanceState
+	mu         sync.Mutex
+	cfg        Config
+	preopenFDs []int
+	states     map[wago.InstanceIdentity]*instanceState
 }
 
-func newStateStore(cfg Config) *stateStore {
-	return &stateStore{cfg: normalizeConfig(cfg), states: make(map[wago.InstanceIdentity]*instanceState)}
+func newStateStore(cfg Config, preopenFDs []int) *stateStore {
+	return &stateStore{
+		cfg:        normalizeConfig(cfg),
+		preopenFDs: append([]int(nil), preopenFDs...),
+		states:     make(map[wago.InstanceIdentity]*instanceState),
+	}
 }
 
 func (s *stateStore) get(id wago.InstanceIdentity) *instanceState {
@@ -252,7 +270,7 @@ func (s *stateStore) get(id wago.InstanceIdentity) *instanceState {
 	defer s.mu.Unlock()
 	state := s.states[id]
 	if state == nil {
-		state = newInstanceState(s.cfg)
+		state = newInstanceState(s.cfg, s.preopenFDs)
 		s.states[id] = state
 	}
 	return state
