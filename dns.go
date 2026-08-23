@@ -46,8 +46,8 @@ func (p *Plugin) dnsResolveDecoded(m wago.HostModule, hostname string, family in
 		results[1] = uint64(uint32(ErrInvalid))
 		return
 	}
-	if hostname == "" || len(hostname) > 253 {
-		results[1] = uint64(uint32(ErrInvalid))
+	if code := validateDNSName(hostname); code != ErrOK {
+		results[1] = uint64(uint32(code))
 		return
 	}
 	addresses, err := net.DefaultResolver.LookupIPAddr(context.Background(), hostname)
@@ -159,9 +159,9 @@ func (p *Plugin) dnsBindings() []binding {
 		width  textWidth
 	}{{"i8", textI8}, {"i16", textI16}, {"i32", textI32}} {
 		out = append(out,
-			binding{"dns_resolve_mem32_" + spec.suffix, p.dnsResolveMemoryHost(spec.width, wago.GuestMemory32), []wago.ValType{i32, i32, i32, i32, i32, i32}, []wago.ValType{i32, i32}, CapNetwork, "resolve a Memory32 hostname"},
-			binding{"dns_resolve_mem64_" + spec.suffix, p.dnsResolveMemoryHost(spec.width, wago.GuestMemory64), []wago.ValType{i32, i64, i64, i32, i32, i32}, []wago.ValType{i32, i32}, CapNetwork, "resolve a Memory64 hostname"},
-			binding{"dns_resolve_array_" + spec.suffix, p.dnsResolveArrayHost(spec.width), []wago.ValType{anyref, i32, i32, i32, i32, i32}, []wago.ValType{i32, i32}, CapNetwork, "resolve a GC-array hostname"},
+			binding{"dns_resolve_mem32_" + spec.suffix, p.dnsResolveMemoryHost(spec.width, wago.GuestMemory32), []wago.ValType{i32, i32, i32, i32, i32, i32}, []wago.ValType{i32, i32}, CapNetwork, "resolve an ASCII Memory32 DNS name"},
+			binding{"dns_resolve_mem64_" + spec.suffix, p.dnsResolveMemoryHost(spec.width, wago.GuestMemory64), []wago.ValType{i32, i64, i64, i32, i32, i32}, []wago.ValType{i32, i32}, CapNetwork, "resolve an ASCII Memory64 DNS name"},
+			binding{"dns_resolve_array_" + spec.suffix, p.dnsResolveArrayHost(spec.width), []wago.ValType{anyref, i32, i32, i32, i32, i32}, []wago.ValType{i32, i32}, CapNetwork, "resolve an ASCII GC-array DNS name"},
 		)
 	}
 	out = append(out, binding{"dns_next", p.dnsNextHost, []wago.ValType{i32}, []wago.ValType{i32, i64, i64, i32, i32, i32}, CapNetwork, "return the next resolved address"})
