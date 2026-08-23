@@ -62,4 +62,4 @@ jobs:
       - name: Run Facet 0.1 WAST conformance
         env:
           FACET_SPEC_DIR: ${{ github.workspace }}/.facet-spec
-        run: go test -count=1 -run '^TestFacetConformance$' -v .
+        run: go test -count=1 -run '^(TestFacetConformance|TestFacetHarness)$' -v .
