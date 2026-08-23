@@ -70,13 +70,13 @@ func Provider() wago.PluginProvider {
 }
 
 type Plugin struct {
-	cfg          Config
-	arguments    *wago.GuestArgumentsAccess
-	callers      *wago.CallerResolver
-	states       *stateStore
-	raw          *instanceState
-	preopenFDs   []int
-	clockBase    time.Time
+	cfg        Config
+	arguments  *wago.GuestArgumentsAccess
+	callers    *wago.CallerResolver
+	states     *stateStore
+	raw        *instanceState
+	preopenFDs []int
+	clockBase  time.Time
 }
 
 func (p *Plugin) Register(reg *wago.Registrar) error {
