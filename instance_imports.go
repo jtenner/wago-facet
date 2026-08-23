@@ -1,7 +1,6 @@
 package facet
 
 import (
-	"fmt"
 	"sync"
 	"time"
 
@@ -49,12 +48,4 @@ func (i *InstanceImports) Close() error {
 		i.preopenFDs = nil
 	})
 	return nil
-}
-
-func mustLegacyImports(cfg Config) wago.Imports {
-	bundle, err := NewInstanceImports(cfg)
-	if err != nil {
-		panic(fmt.Sprintf("facet: create deprecated low-level imports: %v", err))
-	}
-	return bundle.Imports
 }
