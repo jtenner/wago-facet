@@ -72,7 +72,7 @@ jobs:
       - name: Install pinned wasm-tools on arm64
         if: matrix.arch == 'arm64'
         run: cargo install wasm-tools --version 1.256.0 --locked
-      - name: Run Facet 0.1 WAST conformance and canonical inventory gate
+      - name: Run Facet 0.1 WAST conformance and canonical linkage gates
         env:
           FACET_SPEC_DIR: ${{ github.workspace }}/.facet-spec
-        run: go test -count=1 -run '^(TestCanonicalFacetInventory|TestFacetConformance|TestFacetHarness)$' -v .
+        run: go test -count=1 -run '^(TestCanonicalFacetInventory|TestCanonicalFacetModuleInstantiates|TestFacetConformance|TestFacetHarness)$' -v .
