@@ -184,14 +184,14 @@ func arrayRange(m wago.HostModule, slot uint64, expectedStorage wago.GuestGCArra
 		}
 		end, ok := checkedAdd(byteOffset, byteLength)
 		if !ok {
-			return ErrRange
+			return ErrFault
 		}
 		payload, _, err := storage.GCArrayBytes(ref, access)
 		if err != nil {
 			return ErrType
 		}
 		if end > uint64(len(payload)) {
-			return ErrRange
+			return ErrFault
 		}
 		return fn(payload[byteOffset:end])
 	})
