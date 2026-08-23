@@ -59,7 +59,7 @@ func Definition() wago.PluginDefinition {
 			{Name: wago.AuthorityHostCallerIdentify, Mode: wago.AuthorityRequired, Reason: "isolate opaque Facet resource handles by guest instance"},
 			{Name: wago.AuthorityHostArgumentsRead, Mode: wago.AuthorityRequired, Reason: "expose the runtime-scoped guest argument vector through Facet"},
 			{Name: wago.AuthorityInstanceCloseObserve, Mode: wago.AuthorityRequired, Reason: "release Facet resources when their guest instance closes"},
-			{Name: wago.AuthorityInstanceInstantiateIntercept, Mode: wago.AuthorityOptional, Reason: "validate caller-selected concrete GC-array result storage before instantiation"},
+			{Name: wago.AuthorityInstanceInstantiateIntercept, Mode: wago.AuthorityRequired, Reason: "validate exact structural Facet GC-reference signatures and caller-selected array result storage before instantiation"},
 		},
 		ConfigSchema: ConfigSchema(),
 	}
@@ -109,17 +109,14 @@ func (p *Plugin) Register(reg *wago.Registrar) error {
 		return err
 	}
 
-	allocatingTextEnabled := reg.Granted(wago.AuthorityInstanceInstantiateIntercept)
-	if allocatingTextEnabled {
-		instantiate, err := reg.InstanceInstantiateInterceptor()
-		if err != nil {
-			return err
-		}
-		if err := instantiate.Before(func(request wago.InstantiationRequest) error {
-			return validateAllAllocatingTextImports(request.Module)
-		}); err != nil {
-			return err
-		}
+	instantiate, err := reg.InstanceInstantiateInterceptor()
+	if err != nil {
+		return err
+	}
+	if err := instantiate.Before(func(request wago.InstantiationRequest) error {
+		return validateFacetImportSignatures(request.Module)
+	}); err != nil {
+		return err
 	}
 
 	imports, err := reg.HostImports()
@@ -143,10 +140,8 @@ func (p *Plugin) Register(reg *wago.Registrar) error {
 	allBindings = append(allBindings, p.linkBindings()...)
 	allBindings = append(allBindings, p.datagramBindings()...)
 	allBindings = append(allBindings, p.dnsBindings()...)
-	if allocatingTextEnabled {
-		allBindings = append(allBindings, p.allocatingTextBindings()...)
-		allBindings = append(allBindings, p.allocatingReadlinkBindings()...)
-	}
+	allBindings = append(allBindings, p.allocatingTextBindings()...)
+	allBindings = append(allBindings, p.allocatingReadlinkBindings()...)
 	for _, b := range allBindings {
 		module.Func(b.name, b.fn).Params(b.params...).Results(b.results...).Capability(b.cap).Docs(b.docs)
 	}
@@ -206,15 +201,6 @@ func (p *Plugin) monotonicNow() uint64 {
 		return 0
 	}
 	return uint64(d)
-}
-
-// Imports returns one low-level, single-instance Facet import map.
-//
-// Deprecated: use NewInstanceImports and call Close on the returned bundle.
-// Imports cannot expose an ownership handle for host descriptors and other
-// resources created by guest calls.
-func Imports(cfg Config) wago.Imports {
-	return mustLegacyImports(cfg)
 }
 
 func MarshalConfig(cfg any) (json.RawMessage, error) {
