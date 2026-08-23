@@ -1,6 +1,7 @@
 package facet
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"net"
@@ -13,6 +14,10 @@ func errorCode(err error) int32 {
 		return ErrOK
 	}
 	switch {
+	case errors.Is(err, context.Canceled):
+		return ErrCanceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return ErrTimedOut
 	case errors.Is(err, fs.ErrNotExist):
 		return ErrNoEntry
 	case errors.Is(err, fs.ErrExist):
