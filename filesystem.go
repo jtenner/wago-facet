@@ -2,9 +2,9 @@ package facet
 
 import (
 	"errors"
+	"io"
 	"math"
 	"os"
-	"syscall"
 
 	wago "github.com/wago-org/wago"
 	"golang.org/x/sys/unix"
@@ -17,9 +17,18 @@ type dirEntrySnapshot struct {
 }
 
 type dirIterator struct {
-	entries []os.DirEntry
+	file    *os.File
 	index   int
 	pending *dirEntrySnapshot
+}
+
+func (d *dirIterator) close() error {
+	if d == nil || d.file == nil {
+		return nil
+	}
+	file := d.file
+	d.file = nil
+	return file.Close()
 }
 
 func (p *Plugin) preopenCountHost(m wago.HostModule, params, results []uint64) {
@@ -158,7 +167,7 @@ func (p *Plugin) fdSetFlagsHost(m wago.HostModule, params, results []uint64) {
 		return
 	}
 	if h.file != nil {
-		if h.kind == handlePreopen || (h.file.directory && flags&FDAppend != 0) {
+		if h.kind == handlePreopen || h.file.directory {
 			if flags != 0 {
 				results[0] = uint64(uint32(ErrInvalid))
 				return
@@ -265,6 +274,27 @@ func fileTypeFromInfo(info os.FileInfo) int32 {
 	case mode&os.ModeDevice != 0:
 		return FileTypeBlock
 	case mode&os.ModeNamedPipe != 0:
+		return FileTypeFIFO
+	default:
+		return FileTypeUnknown
+	}
+}
+
+func fileTypeFromUnixMode(mode uint32) int32 {
+	switch mode & unix.S_IFMT {
+	case unix.S_IFREG:
+		return FileTypeRegular
+	case unix.S_IFDIR:
+		return FileTypeDirectory
+	case unix.S_IFLNK:
+		return FileTypeSymlink
+	case unix.S_IFCHR:
+		return FileTypeChar
+	case unix.S_IFBLK:
+		return FileTypeBlock
+	case unix.S_IFSOCK:
+		return FileTypeSocket
+	case unix.S_IFIFO:
 		return FileTypeFIFO
 	default:
 		return FileTypeUnknown
@@ -460,24 +490,24 @@ func (p *Plugin) dirIterOpenHost(m wago.HostModule, params, results []uint64) {
 		results[1] = uint64(uint32(errorCode(err)))
 		return
 	}
-	file := os.NewFile(uintptr(fd), "facet-dir")
-	entries, err := file.ReadDir(-1)
-	closeErr := file.Close()
-	if err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		results[1] = uint64(uint32(errorCode(err)))
+	file := os.NewFile(uintptr(fd), "facet-dirfd")
+	if file == nil {
+		_ = unix.Close(fd)
+		results[1] = uint64(uint32(ErrOther))
 		return
 	}
-	id, code := state.alloc(&handleEntry{kind: handleIterator, iter: &dirIterator{entries: entries}})
+	iter := &dirIterator{file: file}
+	id, code := state.alloc(&handleEntry{kind: handleIterator, iter: iter})
+	if code != ErrOK {
+		_ = iter.close()
+	}
 	results[0] = uint64(id)
 	results[1] = uint64(uint32(code))
 }
 
 func getIterator(state *instanceState, id uint32) (*dirIterator, int32) {
 	h, code := state.get(id)
-	if code != ErrOK || h.kind != handleIterator || h.iter == nil {
+	if code != ErrOK || h.kind != handleIterator || h.iter == nil || h.iter.file == nil {
 		return nil, ErrBadHandle
 	}
 	return h.iter, ErrOK
@@ -487,21 +517,28 @@ func snapshotDirEntry(iter *dirIterator) (*dirEntrySnapshot, int32) {
 	if iter.pending != nil {
 		return iter.pending, ErrOK
 	}
-	if iter.index >= len(iter.entries) {
-		return nil, ErrOK
+	if iter.file == nil {
+		return nil, ErrBadHandle
 	}
-	entry := iter.entries[iter.index]
-	snap := &dirEntrySnapshot{name: entry.Name(), kind: fileTypeFromDirEntry(entry)}
-	if info, err := entry.Info(); err == nil {
-		if st, ok := info.Sys().(*syscall.Stat_t); ok {
-			snap.inode = st.Ino
+	entries, err := iter.file.ReadDir(1)
+	if len(entries) == 0 {
+		if err == nil || errors.Is(err, io.EOF) {
+			return nil, ErrOK
 		}
+		return nil, errorCode(err)
+	}
+	entry := entries[0]
+	snap := &dirEntrySnapshot{name: entry.Name(), kind: fileTypeFromDirEntryType(entry)}
+	var st unix.Stat_t
+	if err := unix.Fstatat(int(iter.file.Fd()), entry.Name(), &st, unix.AT_SYMLINK_NOFOLLOW); err == nil {
+		snap.inode = st.Ino
+		snap.kind = fileTypeFromUnixMode(st.Mode)
 	}
 	iter.pending = snap
 	return snap, ErrOK
 }
 
-func fileTypeFromDirEntry(entry os.DirEntry) int32 {
+func fileTypeFromDirEntryType(entry os.DirEntry) int32 {
 	if entry == nil {
 		return FileTypeUnknown
 	}
@@ -520,9 +557,6 @@ func fileTypeFromDirEntry(entry os.DirEntry) int32 {
 	case t&os.ModeNamedPipe != 0:
 		return FileTypeFIFO
 	default:
-		if info, err := entry.Info(); err == nil {
-			return fileTypeFromInfo(info)
-		}
 		return FileTypeUnknown
 	}
 }
@@ -587,6 +621,10 @@ func (p *Plugin) dirIterRewindHost(m wago.HostModule, params, results []uint64) 
 	iter, code := getIterator(state, uint32(params[0]))
 	if code != ErrOK {
 		results[0] = uint64(uint32(code))
+		return
+	}
+	if _, err := iter.file.Seek(0, io.SeekStart); err != nil {
+		results[0] = uint64(uint32(errorCode(err)))
 		return
 	}
 	iter.index = 0
