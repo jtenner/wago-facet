@@ -512,6 +512,9 @@ func facetConfigForRun(tempRoot, manifestPath string, run facetManifestOp) (json
 }
 
 func facetManifestRights(rights []string) ([]string, error) {
+	if rights == nil {
+		return nil, nil
+	}
 	out := make([]string, 0, len(rights))
 	for _, right := range rights {
 		switch right {
