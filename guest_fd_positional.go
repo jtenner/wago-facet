@@ -50,9 +50,9 @@ func pwriteExplicitOffset(h *handleEntry, buf []byte, offset int64) (int, error)
 	_, restoreErr := unix.FcntlInt(uintptr(h.file.fd), unix.F_SETFL, flags)
 	if restoreErr != nil {
 		// The kernel descriptor no longer agrees with the logical FDAppend state.
-		// Make the Facet handle unusable before any later operation can observe
-		// divergent append semantics. A visible partial write still reports its
-		// byte count according to Facet partial-I/O rules.
+		// Close and mark the entry poisoned. withPositionalFD owns the surrounding
+		// state lock and removes this numeric handle from the handle table and all
+		// poll sets before the host call returns.
 		_ = h.file.close()
 		h.kind = 0
 		if n > 0 {
@@ -81,14 +81,24 @@ func (p *Plugin) withPositionalFD(m wago.HostModule, raw uint64, op fdIOOperatio
 	state := p.stateFor(m)
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	h, code := getFD(state, uint32(raw))
+	id := uint32(raw)
+	h, code := getFD(state, id)
 	if code != ErrOK {
 		return 0, code
 	}
 	if code = validatePositionalFD(h, op); code != ErrOK {
 		return 0, code
 	}
-	return fn(h)
+	transferred, code := fn(h)
+	if h.kind == 0 {
+		// pwriteExplicitOffset uses kind==0 only for a descriptor it has already
+		// closed after failing to restore host flags. Make that closure complete
+		// at the Facet-resource layer as well: no stale handle or poll subscription
+		// may survive the poisoned operation.
+		state.removeFDFromPollSets(id)
+		delete(state.handles, id)
+	}
+	return transferred, code
 }
 
 func (p *Plugin) fdPositionalMemoryHost(op fdIOOperation, addressType wago.GuestMemoryAddressType) wago.HostFunc {
