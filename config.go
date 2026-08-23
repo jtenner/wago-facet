@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 )
 
 const defaultMaxHandles uint32 = 1024
@@ -112,12 +113,20 @@ func validatePluginConfigValue(cfg pluginConfig) error {
 	if cfg.MaxHandles != 0 && (cfg.MaxHandles < 8 || cfg.MaxHandles > 65536) {
 		return fmt.Errorf("maxHandles must be in [8, 65536]")
 	}
+	if len(cfg.Preopens) > 64 {
+		return fmt.Errorf("preopens must contain at most 64 entries")
+	}
+	if len(cfg.Env) > 4096 {
+		return fmt.Errorf("env must contain at most 4096 entries")
+	}
 	seenGuests := make(map[string]struct{}, len(cfg.Preopens))
 	for i, p := range cfg.Preopens {
-		if p.Guest == "" || strings.IndexByte(p.Guest, 0) >= 0 {
+		guestLen := utf8.RuneCountInString(p.Guest)
+		if guestLen < 1 || guestLen > 4096 || strings.IndexByte(p.Guest, 0) >= 0 {
 			return fmt.Errorf("preopens[%d].guest is invalid", i)
 		}
-		if p.Host == "" || strings.IndexByte(p.Host, 0) >= 0 {
+		hostLen := utf8.RuneCountInString(p.Host)
+		if hostLen < 1 || hostLen > 4096 || strings.IndexByte(p.Host, 0) >= 0 {
 			return fmt.Errorf("preopens[%d].host is invalid", i)
 		}
 		if _, ok := seenGuests[p.Guest]; ok {
@@ -138,6 +147,10 @@ func validatePluginConfigValue(cfg pluginConfig) error {
 		}
 	}
 	for i, entry := range cfg.Env {
+		units := utf8.RuneCountInString(entry)
+		if units < 2 || units > 32768 {
+			return fmt.Errorf("env[%d] length must be in [2, 32768]", i)
+		}
 		if strings.IndexByte(entry, 0) >= 0 {
 			return fmt.Errorf("env[%d] contains NUL", i)
 		}
@@ -203,11 +216,8 @@ func normalizeConfig(cfg Config) Config {
 	cfg.Args = append([]string(nil), cfg.Args...)
 	cfg.Env = append([]string(nil), cfg.Env...)
 	cfg.Preopens = append([]Preopen(nil), cfg.Preopens...)
-	for i := range cfg.Preopens {
-		if cfg.Preopens[i].Rights == 0 {
-			cfg.Preopens[i].Rights = defaultPreopenRights
-		}
-	}
+	// Rights == 0 is a real zero-authority grant. Plugin JSON omission is
+	// converted to defaultPreopenRights in configFromPlugin before this point.
 	return cfg
 }
 
