@@ -5,9 +5,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"time"
 
 	wago "github.com/wago-org/wago"
 )
+
+const dnsLookupTimeout = 30 * time.Second
 
 type dnsResolver struct {
 	addresses []socketAddress
@@ -40,6 +43,14 @@ func ipAddrToSocketAddress(ip net.IPAddr) (socketAddress, bool) {
 	}, true
 }
 
+func (p *Plugin) dnsLookupContext() (context.Context, context.CancelFunc) {
+	base := p.dnsCtx
+	if base == nil {
+		base = context.Background()
+	}
+	return context.WithTimeout(base, dnsLookupTimeout)
+}
+
 func (p *Plugin) dnsResolveDecoded(m wago.HostModule, hostname string, family int32, flags uint32, results []uint64) {
 	zeroResults(results)
 	if !dnsFamilyValid(family) || flags != 0 {
@@ -50,7 +61,9 @@ func (p *Plugin) dnsResolveDecoded(m wago.HostModule, hostname string, family in
 		results[1] = uint64(uint32(code))
 		return
 	}
-	addresses, err := net.DefaultResolver.LookupIPAddr(context.Background(), hostname)
+	ctx, cancel := p.dnsLookupContext()
+	defer cancel()
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, hostname)
 	if err != nil {
 		results[1] = uint64(uint32(errorCode(err)))
 		return
