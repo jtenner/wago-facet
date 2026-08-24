@@ -88,6 +88,34 @@ func TestPinnedPreopenSurvivesHostPathReplacement(t *testing.T) {
 	}
 }
 
+func TestPinnedPreopenSupportsSyncOperations(t *testing.T) {
+	root := t.TempDir()
+	cfg := normalizeConfig(Config{Preopens: []Preopen{{Guest: "/cap", Host: root, Rights: RightSync}}})
+	p := &Plugin{cfg: cfg, raw: newInstanceState(cfg)}
+	defer p.raw.closeAll()
+
+	preopen := make([]uint64, 2)
+	p.preopenGetHost(testHostModule{}, []uint64{0}, preopen)
+	if preopen[0] == 0 || int32(preopen[1]) != ErrOK {
+		t.Fatalf("preopen = %v", preopen)
+	}
+
+	operations := []struct {
+		name string
+		call func(wago.HostModule, []uint64, []uint64)
+	}{
+		{name: "fd_sync", call: p.fdSyncHost},
+		{name: "fd_datasync", call: p.fdDatasyncHost},
+	}
+	for _, operation := range operations {
+		results := make([]uint64, 1)
+		operation.call(testHostModule{}, []uint64{preopen[0]}, results)
+		if int32(results[0]) != ErrOK {
+			t.Fatalf("%s(preopen) = %d, want ERR_OK", operation.name, int32(results[0]))
+		}
+	}
+}
+
 func TestDirectorySnapshotMetadataIsDescriptorRelative(t *testing.T) {
 	dir := t.TempDir()
 	entryPath := filepath.Join(dir, "entry")

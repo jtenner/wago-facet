@@ -3,7 +3,10 @@ package facet
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestCapabilitySafeLinkAndReadlink(t *testing.T) {
@@ -49,6 +52,65 @@ func TestCapabilitySafeLinkAndReadlink(t *testing.T) {
 	}
 	if got, err := os.ReadFile(filepath.Join(root, "followed.txt")); err != nil || string(got) != "target" {
 		t.Fatalf("followed hard link contents = %q, err=%v", got, err)
+	}
+}
+
+func TestFollowedLinkWithoutProcFSIsNotSupported(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	if err := os.WriteFile(source, []byte("facet"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srcFD, err := unix.Open(source, unix.O_PATH|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(srcFD)
+	dstParent, err := unix.Open(root, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(dstParent)
+
+	missingProc := filepath.Join(t.TempDir(), "missing-fd-directory")
+	if code := linkFollowedFDAt(missingProc, srcFD, dstParent, "linked"); code != ErrNotSupported {
+		t.Fatalf("followed link without procfs = %d, want ERR_NOT_SUPPORTED", code)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "linked")); !os.IsNotExist(err) {
+		t.Fatalf("followed link unexpectedly created: %v", err)
+	}
+}
+
+func TestFollowedLinkRejectsFakeProcFS(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	if err := os.WriteFile(source, []byte("facet"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srcFD, err := unix.Open(source, unix.O_PATH|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(srcFD)
+	dstParent, err := unix.Open(root, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(dstParent)
+
+	fakeProc := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(fakeProc, strconv.Itoa(srcFD))); err != nil {
+		t.Fatal(err)
+	}
+	if code := linkFollowedFDAt(fakeProc, srcFD, dstParent, "linked"); code != ErrNotSupported {
+		t.Fatalf("followed link through fake procfs = %d, want ERR_NOT_SUPPORTED", code)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "linked")); !os.IsNotExist(err) {
+		t.Fatalf("followed link through fake procfs unexpectedly created: %v", err)
 	}
 }
 

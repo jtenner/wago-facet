@@ -453,9 +453,11 @@ func (p *Plugin) fdSync(m wago.HostModule, params, results []uint64, dataOnly bo
 	}
 	if h.file != nil {
 		var err error
-		if dataOnly {
+		if dataOnly && !h.file.directory {
 			err = unix.Fdatasync(h.file.fd)
 		} else {
+			// Directory contents are namespace metadata, so datasync requires the
+			// same operation as a full directory sync.
 			err = unix.Fsync(h.file.fd)
 		}
 		results[0] = uint64(uint32(errorCode(err)))

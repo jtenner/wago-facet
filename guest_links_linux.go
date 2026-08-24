@@ -18,6 +18,57 @@ func (p *Plugin) precheckDirectory(m wago.HostModule, raw uint64, required uint6
 	return code
 }
 
+const procSelfFDPath = "/proc/self/fd"
+
+func linkFollowedFDAt(procFDPath string, srcFD, dstParent int, dstLeaf string) int32 {
+	procFD, err := unix.Open(procFDPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR) || errors.Is(err, unix.ELOOP) {
+			return ErrNotSupported
+		}
+		return pathCode(err)
+	}
+	defer unix.Close(procFD)
+
+	// Do not trust a lookalike /proc tree: following an attacker-controlled
+	// symlink here could link a file outside the source directory capability.
+	var fs unix.Statfs_t
+	if err := unix.Fstatfs(procFD, &fs); err != nil {
+		return pathCode(err)
+	}
+	if int64(fs.Type) != int64(unix.PROC_SUPER_MAGIC) {
+		return ErrNotSupported
+	}
+
+	fdName := strconv.Itoa(srcFD)
+	var linkStat unix.Stat_t
+	if err := unix.Fstatat(procFD, fdName, &linkStat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR) {
+			return ErrNotSupported
+		}
+		return pathCode(err)
+	}
+	if linkStat.Mode&unix.S_IFMT != unix.S_IFLNK {
+		return ErrNotSupported
+	}
+
+	// Confirm that this procfs entry resolves to the exact descriptor-pinned
+	// source before asking linkat to follow it.
+	var sourceStat, resolvedStat unix.Stat_t
+	if err := unix.Fstat(srcFD, &sourceStat); err != nil {
+		return pathCode(err)
+	}
+	if err := unix.Fstatat(procFD, fdName, &resolvedStat, 0); err != nil {
+		return pathCode(err)
+	}
+	if sourceStat.Dev != resolvedStat.Dev ||
+		sourceStat.Ino != resolvedStat.Ino ||
+		sourceStat.Mode&unix.S_IFMT != resolvedStat.Mode&unix.S_IFMT {
+		return ErrNotSupported
+	}
+	return pathCode(unix.Linkat(procFD, fdName, dstParent, dstLeaf, unix.AT_SYMLINK_FOLLOW))
+}
+
 func (p *Plugin) linkDecoded(m wago.HostModule, srcDir uint64, src string, dstDir uint64, dst string, flags uint32) int32 {
 	state := p.stateFor(m)
 	state.mu.Lock()
@@ -43,14 +94,7 @@ func (p *Plugin) linkDecoded(m wago.HostModule, srcDir uint64, src string, dstDi
 			return code
 		}
 		defer unix.Close(srcFD)
-		procPath := "/proc/self/fd/" + strconv.Itoa(srcFD)
-		if err := unix.Linkat(unix.AT_FDCWD, procPath, dstParent, dstLeaf, unix.AT_SYMLINK_FOLLOW); err != nil {
-			if errors.Is(err, unix.ENOENT) && !strings.HasPrefix(procPath, "/proc/") {
-				return ErrNotSupported
-			}
-			return pathCode(err)
-		}
-		return ErrOK
+		return linkFollowedFDAt(procSelfFDPath, srcFD, dstParent, dstLeaf)
 	}
 	srcParent, srcLeaf, code := secureParent(srcH.file.fd, src)
 	if code != ErrOK {
