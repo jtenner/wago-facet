@@ -41,17 +41,24 @@ func TestDefinition(t *testing.T) {
 	if def.ID != ID || def.Name != "Facet" || def.Version != Version {
 		t.Fatalf("definition = %#v", def)
 	}
-	if len(def.Authorities) != 4 {
-		t.Fatalf("authority count = %d, want 4", len(def.Authorities))
+	if len(def.Authorities) != 5 {
+		t.Fatalf("authority count = %d, want 5", len(def.Authorities))
 	}
-	found := false
+	foundImports := false
+	foundInstantiationValidation := false
 	for _, req := range def.Authorities {
-		if req.Name == wago.AuthorityHostImportDefine {
-			found = len(req.Scope.Modules) == 1 && req.Scope.Modules[0] == Module
+		switch req.Name {
+		case wago.AuthorityHostImportDefine:
+			foundImports = len(req.Scope.Modules) == 1 && req.Scope.Modules[0] == Module
+		case wago.AuthorityInstanceInstantiateIntercept:
+			foundInstantiationValidation = req.Mode == wago.AuthorityRequired
 		}
 	}
-	if !found {
+	if !foundImports {
 		t.Fatal("host.import.define is not scoped exactly to facet")
+	}
+	if !foundInstantiationValidation {
+		t.Fatal("instance.instantiate.intercept is not declared required")
 	}
 	if Provider().New == nil {
 		t.Fatal("Provider.New is nil")
@@ -233,7 +240,7 @@ func TestPluginConfigValidation(t *testing.T) {
 	if err := validatePluginConfig(good); err != nil {
 		t.Fatalf("valid config: %v", err)
 	}
-	bad := json.RawMessage(`{"preopens":[{"guest":"x","host":"/tmp","rights":["magic"]}]}`)
+	bad := json.RawMessage(`{"preopens":[{"guest":"x","host":"/tmp","rights":["magic"]}]`)
 	if err := validatePluginConfig(bad); err == nil {
 		t.Fatal("unknown right was accepted")
 	}

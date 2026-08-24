@@ -1,6 +1,7 @@
 package facet
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"net"
@@ -13,10 +14,16 @@ func errorCode(err error) int32 {
 		return ErrOK
 	}
 	switch {
+	case errors.Is(err, context.Canceled):
+		return ErrCanceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return ErrTimedOut
 	case errors.Is(err, fs.ErrNotExist):
 		return ErrNoEntry
 	case errors.Is(err, fs.ErrExist):
 		return ErrExists
+	case errors.Is(err, syscall.EPERM):
+		return ErrPermission
 	case errors.Is(err, fs.ErrPermission):
 		return ErrAccess
 	case errors.Is(err, os.ErrDeadlineExceeded):
@@ -27,6 +34,16 @@ func errorCode(err error) int32 {
 		return ErrBadHandle
 	case errors.Is(err, syscall.EBUSY):
 		return ErrBusy
+	case errors.Is(err, syscall.EIO):
+		return ErrIO
+	case errors.Is(err, syscall.ENOMEM):
+		return ErrNoMemory
+	case errors.Is(err, syscall.EOVERFLOW):
+		return ErrOverflow
+	case errors.Is(err, syscall.ECANCELED):
+		return ErrCanceled
+	case errors.Is(err, syscall.EDQUOT):
+		return ErrQuota
 	case errors.Is(err, syscall.EISDIR):
 		return ErrIsDirectory
 	case errors.Is(err, syscall.ENOTDIR):
@@ -47,7 +64,7 @@ func errorCode(err error) int32 {
 		return ErrLoop
 	case errors.Is(err, syscall.ENAMETOOLONG):
 		return ErrNameTooLong
-	case errors.Is(err, syscall.ENOTSUP), errors.Is(err, syscall.EOPNOTSUPP):
+	case errors.Is(err, syscall.ENOTSUP), errors.Is(err, syscall.EOPNOTSUPP), errors.Is(err, syscall.ENOSYS):
 		return ErrNotSupported
 	case errors.Is(err, syscall.EADDRINUSE):
 		return ErrAddressInUse
@@ -55,7 +72,7 @@ func errorCode(err error) int32 {
 		return ErrAddressInvalid
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return ErrConnectionRefused
-	case errors.Is(err, syscall.ECONNRESET):
+	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.ECONNABORTED):
 		return ErrConnectionReset
 	case errors.Is(err, syscall.ENOTCONN):
 		return ErrNotConnected
@@ -81,7 +98,7 @@ func errorCode(err error) int32 {
 		}
 		return ErrProtocol
 	}
-	return ErrIO
+	return ErrOther
 }
 
 func zeroResults(results []uint64) {

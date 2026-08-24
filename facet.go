@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 
 	wago "github.com/wago-org/wago"
@@ -29,8 +28,11 @@ const (
 	CapStdinRead       wago.Capability = "facet.stdio.read"
 	CapStdoutWrite     wago.Capability = "facet.stdio.write"
 	CapFDManage        wago.Capability = "facet.fd.manage"
+	CapFDRead          wago.Capability = "facet.fd.read"
+	CapFDWrite         wago.Capability = "facet.fd.write"
 	CapFilesystemRead  wago.Capability = "facet.filesystem.read"
 	CapFilesystemWrite wago.Capability = "facet.filesystem.write"
+	CapFilesystemOpen  wago.Capability = "facet.filesystem.open"
 	CapNetwork         wago.Capability = "facet.network"
 	CapPoll            wago.Capability = "facet.poll"
 )
@@ -53,49 +55,30 @@ func Definition() wago.PluginDefinition {
 			Authors:    []string{"Joshua Tenner"},
 		},
 		Authorities: []wago.AuthorityRequest{
-			{
-				Name:   wago.AuthorityHostImportDefine,
-				Mode:   wago.AuthorityRequired,
-				Reason: "define the Facet Core WebAssembly import module",
-				Scope:  wago.AuthorityScope{Modules: []string{Module}},
-			},
-			{
-				Name:   wago.AuthorityHostCallerIdentify,
-				Mode:   wago.AuthorityRequired,
-				Reason: "isolate opaque Facet resource handles by guest instance",
-			},
-			{
-				Name:   wago.AuthorityHostArgumentsRead,
-				Mode:   wago.AuthorityRequired,
-				Reason: "expose the runtime-scoped guest argument vector through Facet",
-			},
-			{
-				Name:   wago.AuthorityInstanceCloseObserve,
-				Mode:   wago.AuthorityRequired,
-				Reason: "release Facet resources when their guest instance closes",
-			},
+			{Name: wago.AuthorityHostImportDefine, Mode: wago.AuthorityRequired, Reason: "define the Facet Core WebAssembly import module", Scope: wago.AuthorityScope{Modules: []string{Module}}},
+			{Name: wago.AuthorityHostCallerIdentify, Mode: wago.AuthorityRequired, Reason: "isolate opaque Facet resource handles by guest instance"},
+			{Name: wago.AuthorityHostArgumentsRead, Mode: wago.AuthorityRequired, Reason: "expose the runtime-scoped guest argument vector through Facet"},
+			{Name: wago.AuthorityInstanceCloseObserve, Mode: wago.AuthorityRequired, Reason: "release Facet resources when their guest instance closes"},
+			{Name: wago.AuthorityInstanceInstantiateIntercept, Mode: wago.AuthorityRequired, Reason: "validate exact structural Facet GC-reference signatures and caller-selected array result storage before instantiation"},
 		},
 		ConfigSchema: ConfigSchema(),
 	}
 }
 
 func Provider() wago.PluginProvider {
-	return wago.PluginProvider{
-		Definition: Definition(),
-		New: func() wago.Plugin {
-			return &Plugin{}
-		},
-		ValidateConfig: validatePluginConfig,
-	}
+	return wago.PluginProvider{Definition: Definition(), New: func() wago.Plugin { return &Plugin{} }, ValidateConfig: validatePluginConfig}
 }
 
 type Plugin struct {
-	cfg       Config
-	arguments *wago.GuestArgumentsAccess
-	callers   *wago.CallerResolver
-	states    *stateStore
-	raw       *instanceState
-	clockBase time.Time
+	cfg        Config
+	arguments  *wago.GuestArgumentsAccess
+	callers    *wago.CallerResolver
+	states     *stateStore
+	raw        *instanceState
+	preopenFDs []int
+	clockBase  time.Time
+	dnsCtx     context.Context
+	dnsCancel  context.CancelFunc
 }
 
 func (p *Plugin) Register(reg *wago.Registrar) error {
@@ -108,7 +91,6 @@ func (p *Plugin) Register(reg *wago.Registrar) error {
 		return err
 	}
 	p.cfg = resolved
-
 	p.arguments, err = reg.GuestArguments()
 	if err != nil {
 		return err
@@ -128,6 +110,17 @@ func (p *Plugin) Register(reg *wago.Registrar) error {
 	}); err != nil {
 		return err
 	}
+
+	instantiate, err := reg.InstanceInstantiateInterceptor()
+	if err != nil {
+		return err
+	}
+	if err := instantiate.Before(func(request wago.InstantiationRequest) error {
+		return validateFacetImportSignatures(request.Module)
+	}); err != nil {
+		return err
+	}
+
 	imports, err := reg.HostImports()
 	if err != nil {
 		return err
@@ -141,7 +134,17 @@ func (p *Plugin) Register(reg *wago.Registrar) error {
 			return err
 		}
 	}
-	for _, b := range p.bindings() {
+	allBindings := append(p.bindings(), p.guestStorageBindings()...)
+	allBindings = append(allBindings, p.fdIOBindings()...)
+	allBindings = append(allBindings, p.positionalBindings()...)
+	allBindings = append(allBindings, p.vectoredBindings()...)
+	allBindings = append(allBindings, p.pathBindings()...)
+	allBindings = append(allBindings, p.linkBindings()...)
+	allBindings = append(allBindings, p.datagramBindings()...)
+	allBindings = append(allBindings, p.dnsBindings()...)
+	allBindings = append(allBindings, p.allocatingTextBindings()...)
+	allBindings = append(allBindings, p.allocatingReadlinkBindings()...)
+	for _, b := range allBindings {
 		module.Func(b.name, b.fn).Params(b.params...).Results(b.results...).Capability(b.cap).Docs(b.docs)
 	}
 	return reg.Lifecycle(wago.PluginLifecycle{Start: p.start, Stop: p.stop})
@@ -156,24 +159,29 @@ func (p *Plugin) start(ctx context.Context) error {
 		return err
 	}
 	p.cfg.Args = args
-	for _, preopen := range p.cfg.Preopens {
-		info, err := os.Stat(preopen.Host)
-		if err != nil {
-			return fmt.Errorf("facet preopen %q: %w", preopen.Guest, err)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("facet preopen %q host path is not a directory", preopen.Guest)
-		}
+	preopenFDs, err := pinPreopens(p.cfg.Preopens)
+	if err != nil {
+		return err
 	}
+	p.preopenFDs = preopenFDs
 	p.clockBase = time.Now()
-	p.states = newStateStore(p.cfg)
+	p.dnsCtx, p.dnsCancel = context.WithCancel(context.Background())
+	p.states = newStateStore(p.cfg, p.preopenFDs)
 	return nil
 }
 
 func (p *Plugin) stop(context.Context) error {
+	if p.dnsCancel != nil {
+		p.dnsCancel()
+		p.dnsCancel = nil
+		p.dnsCtx = nil
+	}
 	if p.states != nil {
 		p.states.closeAll()
+		p.states = nil
 	}
+	closePinnedPreopens(p.preopenFDs)
+	p.preopenFDs = nil
 	return nil
 }
 
@@ -203,21 +211,6 @@ func (p *Plugin) monotonicNow() uint64 {
 	return uint64(d)
 }
 
-// Imports returns one low-level, single-instance Facet import bundle. It does
-// not participate in Wago plugin policy or lifecycle. Call Imports separately
-// for every guest instance.
-func Imports(cfg Config) wago.Imports {
-	cfg = normalizeConfig(cfg)
-	p := &Plugin{cfg: cfg, raw: newInstanceState(cfg), clockBase: time.Now()}
-	out := make(wago.Imports)
-	for _, b := range p.bindings() {
-		out[Module+"."+b.name] = b.fn
-	}
-	return out
-}
-
-// MarshalConfig validates and marshals a plugin-friendly configuration. It is
-// primarily useful to embedders constructing Wago lock selections in code.
 func MarshalConfig(cfg any) (json.RawMessage, error) {
 	raw, err := json.Marshal(cfg)
 	if err != nil {
@@ -245,8 +238,11 @@ var guestCapabilities = []guestCapability{
 	{CapStdinRead, "obtain the configured standard-input descriptor"},
 	{CapStdoutWrite, "obtain configured standard-output and standard-error descriptors"},
 	{CapFDManage, "inspect and manage Facet descriptor resources"},
+	{CapFDRead, "read from an already-authorized Facet descriptor"},
+	{CapFDWrite, "write to an already-authorized Facet descriptor"},
 	{CapFilesystemRead, "inspect configured filesystem preopens and directory entries"},
-	{CapFilesystemWrite, "perform descriptor mutations permitted by configured rights"},
+	{CapFilesystemWrite, "perform filesystem namespace mutations permitted by configured rights"},
+	{CapFilesystemOpen, "open filesystem resources; per-call Facet rights decide whether the open may mutate the namespace"},
 	{CapNetwork, "create and manage IPv4 and IPv6 sockets"},
 	{CapPoll, "wait for descriptor and monotonic-timer readiness"},
 }

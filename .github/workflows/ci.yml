@@ -17,6 +17,11 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.23.x"
+      - name: Check module files
+        shell: bash
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
       - name: Download modules
         run: go mod download
       - name: Check formatting
@@ -28,3 +33,46 @@ jobs:
         run: go test ./...
       - name: Vet
         run: go vet ./...
+
+  conformance:
+    name: conformance (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.23.x"
+      - id: facet-spec
+        name: Read pinned Facet spec revision
+        shell: bash
+        run: echo "revision=$(cat tests/conformance/FACET_SPEC_REVISION)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: jtenner/facet-spec
+          ref: ${{ steps.facet-spec.outputs.revision }}
+          path: .facet-spec
+      - name: Install pinned wasm-tools on amd64
+        if: matrix.arch == 'amd64'
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/bytecodealliance/wasm-tools/releases/download/v1.256.0/wasm-tools-1.256.0-x86_64-linux.tar.gz \
+            --output /tmp/wasm-tools.tar.gz
+          echo "0b488be25c9e8a74dfa09f7eac614a927ea197f389d8fa5a21ffb1c15deb469d  /tmp/wasm-tools.tar.gz" | sha256sum --check
+          tar -xzf /tmp/wasm-tools.tar.gz -C /tmp
+          sudo install /tmp/wasm-tools-1.256.0-x86_64-linux/wasm-tools /usr/local/bin/wasm-tools
+      - name: Install pinned wasm-tools on arm64
+        if: matrix.arch == 'arm64'
+        run: cargo install wasm-tools --version 1.256.0 --locked
+      - name: Run Facet 0.1 WAST conformance and canonical linkage gates
+        env:
+          FACET_SPEC_DIR: ${{ github.workspace }}/.facet-spec
+        run: go test -count=1 -run '^(TestCanonicalFacetInventory|TestCanonicalFacetModuleInstantiates|TestFacetConformance|TestFacetHarness)$' -v .

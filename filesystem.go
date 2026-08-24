@@ -2,9 +2,9 @@ package facet
 
 import (
 	"errors"
+	"io"
 	"math"
 	"os"
-	"syscall"
 
 	wago "github.com/wago-org/wago"
 	"golang.org/x/sys/unix"
@@ -17,9 +17,18 @@ type dirEntrySnapshot struct {
 }
 
 type dirIterator struct {
-	entries []os.DirEntry
+	file    *os.File
 	index   int
 	pending *dirEntrySnapshot
+}
+
+func (d *dirIterator) close() error {
+	if d == nil || d.file == nil {
+		return nil
+	}
+	file := d.file
+	d.file = nil
+	return file.Close()
 }
 
 func (p *Plugin) preopenCountHost(m wago.HostModule, params, results []uint64) {
@@ -157,6 +166,36 @@ func (p *Plugin) fdSetFlagsHost(m wago.HostModule, params, results []uint64) {
 		results[0] = uint64(uint32(ErrOK))
 		return
 	}
+	if h.file != nil {
+		if h.kind == handlePreopen || h.file.directory {
+			if flags != 0 {
+				results[0] = uint64(uint32(ErrInvalid))
+				return
+			}
+			h.flags = 0
+			results[0] = uint64(uint32(ErrOK))
+			return
+		}
+		current, err := unix.FcntlInt(uintptr(h.file.fd), unix.F_GETFL, 0)
+		if err != nil {
+			results[0] = uint64(uint32(errorCode(err)))
+			return
+		}
+		current &^= unix.O_APPEND | unix.O_NONBLOCK
+		if flags&FDAppend != 0 {
+			current |= unix.O_APPEND
+		}
+		if flags&FDNonblock != 0 {
+			current |= unix.O_NONBLOCK
+		}
+		if _, err := unix.FcntlInt(uintptr(h.file.fd), unix.F_SETFL, current); err != nil {
+			results[0] = uint64(uint32(errorCode(err)))
+			return
+		}
+		h.flags = flags
+		results[0] = uint64(uint32(ErrOK))
+		return
+	}
 	if flags != 0 {
 		results[0] = uint64(uint32(ErrNotSupported))
 		return
@@ -182,22 +221,19 @@ func (p *Plugin) fdStatHost(m wago.HostModule, params, results []uint64) {
 		results[9] = uint64(uint32(ErrCapability))
 		return
 	}
+	if h.file != nil {
+		var st unix.Stat_t
+		if err := unix.Fstat(h.file.fd, &st); err != nil {
+			writeUnixStat(results, nil, errorCode(err))
+			return
+		}
+		writeUnixStat(results, &st, ErrOK)
+		return
+	}
 	fileType, statFlags, size := int32(FileTypeUnknown), uint32(0), uint64(0)
 	var msec int64
 	var mnsec int32
 	switch {
-	case h.pre != nil:
-		info, err := os.Stat(h.pre.Host)
-		if err != nil {
-			results[9] = uint64(uint32(errorCode(err)))
-			return
-		}
-		fileType = fileTypeFromInfo(info)
-		if info.Size() > 0 {
-			size = uint64(info.Size())
-		}
-		msec, mnsec = info.ModTime().Unix(), int32(info.ModTime().Nanosecond())
-		statFlags |= StatHasMTime
 	case h.sock != nil:
 		fileType = FileTypeSocket
 	case h.stdio != nil:
@@ -244,13 +280,48 @@ func fileTypeFromInfo(info os.FileInfo) int32 {
 	}
 }
 
+func fileTypeFromUnixMode(mode uint32) int32 {
+	switch mode & unix.S_IFMT {
+	case unix.S_IFREG:
+		return FileTypeRegular
+	case unix.S_IFDIR:
+		return FileTypeDirectory
+	case unix.S_IFLNK:
+		return FileTypeSymlink
+	case unix.S_IFCHR:
+		return FileTypeChar
+	case unix.S_IFBLK:
+		return FileTypeBlock
+	case unix.S_IFSOCK:
+		return FileTypeSocket
+	case unix.S_IFIFO:
+		return FileTypeFIFO
+	default:
+		return FileTypeUnknown
+	}
+}
+
+func seekWhence(whence int32) (int, bool) {
+	switch whence {
+	case SeekSet:
+		return 0, true
+	case SeekCur:
+		return 1, true
+	case SeekEnd:
+		return 2, true
+	default:
+		return 0, false
+	}
+}
+
 func (p *Plugin) fdSeekHost(m wago.HostModule, params, results []uint64) {
 	zeroResults(results)
 	if len(params) != 3 || len(results) < 2 {
 		panic(wago.HostTrap{Err: errors.New("facet: fd_seek host signature mismatch")})
 	}
 	whence := int32(uint32(params[2]))
-	if whence != SeekSet && whence != SeekCur && whence != SeekEnd {
+	osWhence, ok := seekWhence(whence)
+	if !ok {
 		results[1] = uint64(uint32(ErrInvalid))
 		return
 	}
@@ -266,8 +337,22 @@ func (p *Plugin) fdSeekHost(m wago.HostModule, params, results []uint64) {
 		results[1] = uint64(uint32(ErrCapability))
 		return
 	}
-	if h.pre != nil {
-		results[1] = uint64(uint32(ErrIsDirectory))
+	if h.file != nil {
+		if h.file.directory {
+			results[1] = uint64(uint32(ErrIsDirectory))
+			return
+		}
+		offset, err := unix.Seek(h.file.fd, int64(params[1]), osWhence)
+		if err != nil {
+			results[1] = uint64(uint32(errorCode(err)))
+			return
+		}
+		if offset < 0 {
+			results[1] = uint64(uint32(ErrInvalid))
+			return
+		}
+		results[0] = uint64(offset)
+		results[1] = uint64(uint32(ErrOK))
 		return
 	}
 	results[1] = uint64(uint32(ErrPipe))
@@ -290,8 +375,22 @@ func (p *Plugin) fdTellHost(m wago.HostModule, params, results []uint64) {
 		results[1] = uint64(uint32(ErrCapability))
 		return
 	}
-	if h.pre != nil {
-		results[1] = uint64(uint32(ErrIsDirectory))
+	if h.file != nil {
+		if h.file.directory {
+			results[1] = uint64(uint32(ErrIsDirectory))
+			return
+		}
+		offset, err := unix.Seek(h.file.fd, 0, 1)
+		if err != nil {
+			results[1] = uint64(uint32(errorCode(err)))
+			return
+		}
+		if offset < 0 {
+			results[1] = uint64(uint32(ErrInvalid))
+			return
+		}
+		results[0] = uint64(offset)
+		results[1] = uint64(uint32(ErrOK))
 		return
 	}
 	results[1] = uint64(uint32(ErrPipe))
@@ -301,6 +400,10 @@ func (p *Plugin) fdSetSizeHost(m wago.HostModule, params, results []uint64) {
 	zeroResults(results)
 	if len(params) != 2 || len(results) < 1 {
 		panic(wago.HostTrap{Err: errors.New("facet: fd_set_size host signature mismatch")})
+	}
+	if params[1] > math.MaxInt64 {
+		results[0] = uint64(uint32(ErrFileTooLarge))
+		return
 	}
 	state := p.stateFor(m)
 	state.mu.Lock()
@@ -314,20 +417,24 @@ func (p *Plugin) fdSetSizeHost(m wago.HostModule, params, results []uint64) {
 		results[0] = uint64(uint32(ErrCapability))
 		return
 	}
-	if h.pre != nil {
-		results[0] = uint64(uint32(ErrIsDirectory))
+	if h.file != nil {
+		if h.file.directory {
+			results[0] = uint64(uint32(ErrIsDirectory))
+			return
+		}
+		results[0] = uint64(uint32(errorCode(unix.Ftruncate(h.file.fd, int64(params[1])))))
 		return
 	}
 	results[0] = uint64(uint32(ErrNotSupported))
 }
 
 func (p *Plugin) fdSyncHost(m wago.HostModule, params, results []uint64) {
-	p.fdSync(m, params, results)
+	p.fdSync(m, params, results, false)
 }
 func (p *Plugin) fdDatasyncHost(m wago.HostModule, params, results []uint64) {
-	p.fdSync(m, params, results)
+	p.fdSync(m, params, results, true)
 }
-func (p *Plugin) fdSync(m wago.HostModule, params, results []uint64) {
+func (p *Plugin) fdSync(m wago.HostModule, params, results []uint64, dataOnly bool) {
 	zeroResults(results)
 	if len(params) != 1 || len(results) < 1 {
 		panic(wago.HostTrap{Err: errors.New("facet: fd_sync host signature mismatch")})
@@ -344,16 +451,12 @@ func (p *Plugin) fdSync(m wago.HostModule, params, results []uint64) {
 		results[0] = uint64(uint32(ErrCapability))
 		return
 	}
-	if h.pre != nil {
-		file, err := os.Open(h.pre.Host)
-		if err != nil {
-			results[0] = uint64(uint32(errorCode(err)))
-			return
-		}
-		err = file.Sync()
-		closeErr := file.Close()
-		if err == nil {
-			err = closeErr
+	if h.file != nil {
+		var err error
+		if dataOnly {
+			err = unix.Fdatasync(h.file.fd)
+		} else {
+			err = unix.Fsync(h.file.fd)
 		}
 		results[0] = uint64(uint32(errorCode(err)))
 		return
@@ -374,7 +477,7 @@ func (p *Plugin) dirIterOpenHost(m wago.HostModule, params, results []uint64) {
 		results[1] = uint64(uint32(code))
 		return
 	}
-	if h.pre == nil {
+	if h.file == nil || !h.file.directory {
 		results[1] = uint64(uint32(ErrNotDirectory))
 		return
 	}
@@ -382,19 +485,29 @@ func (p *Plugin) dirIterOpenHost(m wago.HostModule, params, results []uint64) {
 		results[1] = uint64(uint32(ErrCapability))
 		return
 	}
-	entries, err := os.ReadDir(h.pre.Host)
+	fd, err := unix.Openat(h.file.fd, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		results[1] = uint64(uint32(errorCode(err)))
 		return
 	}
-	id, code := state.alloc(&handleEntry{kind: handleIterator, iter: &dirIterator{entries: entries}})
+	file := os.NewFile(uintptr(fd), "facet-dirfd")
+	if file == nil {
+		_ = unix.Close(fd)
+		results[1] = uint64(uint32(ErrOther))
+		return
+	}
+	iter := &dirIterator{file: file}
+	id, code := state.alloc(&handleEntry{kind: handleIterator, iter: iter})
+	if code != ErrOK {
+		_ = iter.close()
+	}
 	results[0] = uint64(id)
 	results[1] = uint64(uint32(code))
 }
 
 func getIterator(state *instanceState, id uint32) (*dirIterator, int32) {
 	h, code := state.get(id)
-	if code != ErrOK || h.kind != handleIterator || h.iter == nil {
+	if code != ErrOK || h.kind != handleIterator || h.iter == nil || h.iter.file == nil {
 		return nil, ErrBadHandle
 	}
 	return h.iter, ErrOK
@@ -404,21 +517,28 @@ func snapshotDirEntry(iter *dirIterator) (*dirEntrySnapshot, int32) {
 	if iter.pending != nil {
 		return iter.pending, ErrOK
 	}
-	if iter.index >= len(iter.entries) {
-		return nil, ErrOK
+	if iter.file == nil {
+		return nil, ErrBadHandle
 	}
-	entry := iter.entries[iter.index]
-	snap := &dirEntrySnapshot{name: entry.Name(), kind: fileTypeFromDirEntry(entry)}
-	if info, err := entry.Info(); err == nil {
-		if st, ok := info.Sys().(*syscall.Stat_t); ok {
-			snap.inode = st.Ino
+	entries, err := iter.file.ReadDir(1)
+	if len(entries) == 0 {
+		if err == nil || errors.Is(err, io.EOF) {
+			return nil, ErrOK
 		}
+		return nil, errorCode(err)
+	}
+	entry := entries[0]
+	snap := &dirEntrySnapshot{name: entry.Name(), kind: fileTypeFromDirEntryType(entry)}
+	var st unix.Stat_t
+	if err := unix.Fstatat(int(iter.file.Fd()), entry.Name(), &st, unix.AT_SYMLINK_NOFOLLOW); err == nil {
+		snap.inode = st.Ino
+		snap.kind = fileTypeFromUnixMode(st.Mode)
 	}
 	iter.pending = snap
 	return snap, ErrOK
 }
 
-func fileTypeFromDirEntry(entry os.DirEntry) int32 {
+func fileTypeFromDirEntryType(entry os.DirEntry) int32 {
 	if entry == nil {
 		return FileTypeUnknown
 	}
@@ -437,9 +557,6 @@ func fileTypeFromDirEntry(entry os.DirEntry) int32 {
 	case t&os.ModeNamedPipe != 0:
 		return FileTypeFIFO
 	default:
-		if info, err := entry.Info(); err == nil {
-			return fileTypeFromInfo(info)
-		}
 		return FileTypeUnknown
 	}
 }
@@ -504,6 +621,10 @@ func (p *Plugin) dirIterRewindHost(m wago.HostModule, params, results []uint64) 
 	iter, code := getIterator(state, uint32(params[0]))
 	if code != ErrOK {
 		results[0] = uint64(uint32(code))
+		return
+	}
+	if _, err := iter.file.Seek(0, io.SeekStart); err != nil {
+		results[0] = uint64(uint32(errorCode(err)))
 		return
 	}
 	iter.index = 0

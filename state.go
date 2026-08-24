@@ -16,9 +16,11 @@ const (
 	handleStdout
 	handleStderr
 	handlePreopen
+	handleFile
 	handleIterator
 	handleSocket
 	handlePoll
+	handleResolver
 )
 
 type handleEntry struct {
@@ -27,9 +29,11 @@ type handleEntry struct {
 	flags  uint32
 	stdio  *stdioResource
 	pre    *Preopen
+	file   *fileResource
 	iter   *dirIterator
 	sock   *socketResource
 	poll   *pollSet
+	dns    *dnsResolver
 }
 
 func (h *handleEntry) isFD() bool {
@@ -37,7 +41,7 @@ func (h *handleEntry) isFD() bool {
 		return false
 	}
 	switch h.kind {
-	case handleStdin, handleStdout, handleStderr, handlePreopen, handleSocket:
+	case handleStdin, handleStdout, handleStderr, handlePreopen, handleFile, handleSocket:
 		return true
 	default:
 		return false
@@ -50,6 +54,12 @@ func (h *handleEntry) close() error {
 	}
 	if h.sock != nil {
 		return h.sock.close()
+	}
+	if h.file != nil {
+		return h.file.close()
+	}
+	if h.iter != nil {
+		return h.iter.close()
 	}
 	return nil
 }
@@ -65,20 +75,36 @@ type stdioResource struct {
 type instanceState struct {
 	mu sync.Mutex
 
-	cfg        Config
-	nextHandle uint32
-	handles    map[uint32]*handleEntry
-	stdioIDs   [3]uint32
-	preopenIDs []uint32
+	cfg            Config
+	preopenFDs     []int
+	ownsPreopenFDs bool
+	nextHandle     uint32
+	handles        map[uint32]*handleEntry
+	stdioIDs       [3]uint32
+	preopenIDs     []uint32
 }
 
-func newInstanceState(cfg Config) *instanceState {
+func newInstanceState(cfg Config, pinned ...[]int) *instanceState {
 	cfg = normalizeConfig(cfg)
+	var preopenFDs []int
+	ownsPreopenFDs := false
+	if len(pinned) != 0 {
+		preopenFDs = append([]int(nil), pinned[0]...)
+	} else {
+		var err error
+		preopenFDs, err = pinPreopens(cfg.Preopens)
+		if err != nil {
+			panic(fmt.Sprintf("facet: pin raw instance preopens: %v", err))
+		}
+		ownsPreopenFDs = true
+	}
 	return &instanceState{
-		cfg:        cfg,
-		nextHandle: 1,
-		handles:    make(map[uint32]*handleEntry),
-		preopenIDs: make([]uint32, len(cfg.Preopens)),
+		cfg:            cfg,
+		preopenFDs:     preopenFDs,
+		ownsPreopenFDs: ownsPreopenFDs,
+		nextHandle:     1,
+		handles:        make(map[uint32]*handleEntry),
+		preopenIDs:     make([]uint32, len(cfg.Preopens)),
 	}
 }
 
@@ -145,6 +171,17 @@ func (s *instanceState) closeAll() {
 		_ = h.close()
 		delete(s.handles, id)
 	}
+	for i := range s.stdioIDs {
+		s.stdioIDs[i] = 0
+	}
+	for i := range s.preopenIDs {
+		s.preopenIDs[i] = 0
+	}
+	if s.ownsPreopenFDs {
+		closePinnedPreopens(s.preopenFDs)
+		s.preopenFDs = nil
+		s.ownsPreopenFDs = false
+	}
 }
 
 func (s *instanceState) stdio(which int) (uint32, int32) {
@@ -201,12 +238,27 @@ func (s *instanceState) preopen(index uint32) (uint32, int32) {
 		}
 		s.preopenIDs[index] = 0
 	}
-	p := &s.cfg.Preopens[index]
-	id, code := s.alloc(&handleEntry{kind: handlePreopen, rights: p.Rights, pre: p})
-	if code == ErrOK {
-		s.preopenIDs[index] = id
+	if uint64(index) >= uint64(len(s.preopenFDs)) || s.preopenFDs[index] < 0 {
+		return 0, ErrOther
 	}
-	return id, code
+	p := &s.cfg.Preopens[index]
+	fd, err := duplicatePinnedPreopen(s.preopenFDs[index])
+	if err != nil {
+		return 0, errorCode(err)
+	}
+	entry := &handleEntry{
+		kind:   handlePreopen,
+		rights: p.Rights,
+		pre:    p,
+		file:   &fileResource{fd: fd, directory: true},
+	}
+	id, code := s.alloc(entry)
+	if code != ErrOK {
+		_ = entry.close()
+		return 0, code
+	}
+	s.preopenIDs[index] = id
+	return id, ErrOK
 }
 
 func (s *instanceState) removeFDFromPollSets(fd uint32) {
@@ -218,13 +270,18 @@ func (s *instanceState) removeFDFromPollSets(fd uint32) {
 }
 
 type stateStore struct {
-	mu     sync.Mutex
-	cfg    Config
-	states map[wago.InstanceIdentity]*instanceState
+	mu         sync.Mutex
+	cfg        Config
+	preopenFDs []int
+	states     map[wago.InstanceIdentity]*instanceState
 }
 
-func newStateStore(cfg Config) *stateStore {
-	return &stateStore{cfg: normalizeConfig(cfg), states: make(map[wago.InstanceIdentity]*instanceState)}
+func newStateStore(cfg Config, preopenFDs []int) *stateStore {
+	return &stateStore{
+		cfg:        normalizeConfig(cfg),
+		preopenFDs: append([]int(nil), preopenFDs...),
+		states:     make(map[wago.InstanceIdentity]*instanceState),
+	}
 }
 
 func (s *stateStore) get(id wago.InstanceIdentity) *instanceState {
@@ -232,7 +289,7 @@ func (s *stateStore) get(id wago.InstanceIdentity) *instanceState {
 	defer s.mu.Unlock()
 	state := s.states[id]
 	if state == nil {
-		state = newInstanceState(s.cfg)
+		state = newInstanceState(s.cfg, s.preopenFDs)
 		s.states[id] = state
 	}
 	return state

@@ -8,53 +8,75 @@ This repository follows Facet 0.1.
 
 ## Status
 
-The plugin is experimental.
+The plugin is experimental while the Facet 0.1 release branch is reviewed.
 
-The current Wago host-call API can implement the scalar and resource parts of Facet exactly. It cannot yet expose an arbitrary guest memory by memory index. It also cannot expose a general WebAssembly GC array to a host callback.
+The Runtime plugin path implements the canonical Facet 0.1 import surface. The inventory test requires exactly **261** Facet imports with no duplicate names. Wago's normal registration check verifies scalar ABI categories, and the required instantiation interceptor additionally verifies Facet's structural GC-reference signatures before guest code starts.
 
-For this reason, this plugin does **not** register an import when Wago cannot implement that import correctly.
+Wago callback-scoped guest-storage APIs provide the representation-sensitive operations that Facet needs:
 
-Facet uses normal Core WebAssembly linking for feature detection. A missing import therefore means that the operation is not available.
+- Memory32 and Memory64 by exact WebAssembly memory index;
+- multi-memory guest buffers and iovecs;
+- numeric and `v128` Wasm GC arrays;
+- nested GC arrays for scatter/gather I/O;
+- exact caller-defined GC types;
+- caller-typed GC array result allocation;
+- zero-copy mutable GC-array payload access.
 
-The plugin does not silently use memory 0 for another memory index. It does not copy GC arrays through a scratch memory.
+GC references remain opaque Wago tokens. `wago-facet` does not interpret collector references or object pointers. It resolves them only through Wago's callback-scoped guest-storage APIs.
 
-## Implemented imports
+The preferred integration is `Provider()` through Wago's plugin system. The plugin requires Wago's `instance.instantiate.intercept` authority so a module with a non-canonical structural Facet import is rejected during instantiation. Caller-allocated string and readlink results remain templates: the importing module selects a concrete nullable array type with the required element storage class.
 
-The current implementation includes:
+## Implemented surface
 
-- Facet ABI version and handle close;
-- process exit and cooperative yield;
-- standard stream handles;
-- argument and environment counts and width-specific length queries;
+The Runtime plugin path includes:
+
+- ABI version, process exit, yield, and opaque resource lifecycle;
+- stdin, stdout, and stderr descriptors;
+- arguments and environment for UTF-8, UTF-16, and UTF-32;
+- strict and WTF text handling;
 - system and monotonic clocks;
-- sleep operations;
-- scalar cryptographic randomness;
-- filesystem preopen count, handle, and display-name length queries;
-- descriptor rights, flags, and metadata;
-- descriptor positioning and synchronization error semantics;
-- directory iterator creation, length snapshots, and rewind;
+- cryptographic randomness;
+- preopens, descriptor metadata, seek/tell, synchronization, and sizing;
+- sequential, positional, and vectored I/O;
+- Memory32, Memory64, and GC-array buffer families;
+- directory iteration and rewind;
+- capability-beneath path operations;
+- hard links, symbolic links, and readlink;
 - IPv4 and IPv6 socket lifecycle operations;
-- blocking and nonblocking connect state;
-- bind, listen, accept, local address, peer address, and shutdown;
-- level-triggered descriptor polling;
-- one-shot monotonic timers;
-- snapshot-based `poll_wait` and `poll_next` behavior.
+- stream and datagram I/O;
+- DNS resolution;
+- level-triggered polling and monotonic timers;
+- caller-typed allocating GC string and readlink results.
 
-## Imports intentionally absent
+Facet uses normal Core WebAssembly linking for feature detection. The plugin does not substitute memory 0 for another memory index and does not copy GC arrays through a hidden linear-memory scratch area.
 
-The following representation families are not registered yet:
+## Conformance
 
-- `_mem32` guest-buffer operations;
-- `_mem64` guest-buffer operations;
-- `_array_*` guest-buffer operations;
-- caller-typed GC allocation results;
-- path operations that need guest string storage;
-- DNS resolution operations that need a guest string;
-- datagram payload operations.
+`wago-facet` runs the normative Facet 0.1 suite from a pinned `facet-spec` revision on both Linux/amd64 and Linux/arm64.
 
-These imports need Wago to provide callback-scoped indexed-memory or GC-array access.
+The current gate is:
 
-See [`docs/wago-runtime-gaps.md`](docs/wago-runtime-gaps.md) for the required runtime hooks.
+```text
+137 / 137 standard WAST tests   PASS
+  6 /   6 harness tests         PASS
+143 / 143 total tests           PASS
+0 failures
+0 crashes
+0 timeouts
+```
+
+Each standard WAST file runs in an isolated subprocess. A runtime crash or timeout is therefore reported as a conformance failure instead of terminating the complete test run.
+
+The six harness tests cover behavior outside standard WAST command composition:
+
+- cross-instance handle isolation;
+- process exit status;
+- stdout and stderr validation;
+- null nested-GC child validation before I/O;
+- TCP loopback interaction;
+- UDP loopback interaction.
+
+See [`tests/conformance/README.md`](tests/conformance/README.md) for the pinned-suite and local-run instructions.
 
 ## Plugin configuration
 
@@ -81,7 +103,7 @@ Example:
 
 The `~` name has no special ABI behavior. It is an ordinary Facet preopen display name.
 
-If `rights` is omitted, a preopen receives `stat`, `path-open`, and `dir-iterate` rights.
+If `rights` is omitted, a preopen receives `stat`, `path-open`, and `dir-iterate` rights. An explicit `"rights": []` grants zero Facet rights.
 
 ## Guest capabilities
 
@@ -96,8 +118,11 @@ facet.process.exit
 facet.stdio.read
 facet.stdio.write
 facet.fd.manage
+facet.fd.read
+facet.fd.write
 facet.filesystem.read
 facet.filesystem.write
+facet.filesystem.open
 facet.network
 facet.poll
 ```
@@ -106,20 +131,26 @@ An embedder can deny these capabilities through normal Wago policy.
 
 ## Direct low-level use
 
-The preferred integration is `Provider()` through Wago's plugin system.
+`Provider()` is the complete and preferred integration.
 
-`Imports(Config)` is also available for low-level embedders. It creates one stateful import bundle for one guest instance. Call `Imports` again for another instance.
+Low-level embedders that need only the scalar/resource subset can call `NewInstanceImports(Config)`. The returned `InstanceImports` owns the import map and all backing host descriptors. Call `Close` after the guest instance is finished. There is intentionally no ownership-free `Imports(Config)` helper because such an API cannot safely release guest-created resources or pinned preopen descriptors.
 
 ## Development
 
-Run:
+Run the normal Go checks with:
 
 ```sh
 go test ./...
 go vet ./...
 ```
 
-CI pins the Wago commit used by this implementation.
+Run the complete Facet 0.1 conformance gate with the pinned suite as described in [`tests/conformance/README.md`](tests/conformance/README.md).
+
+CI pins both the Wago revision used by the plugin and the Facet specification revision used by conformance testing.
+
+## Runtime integration
+
+See [`docs/wago-runtime-gaps.md`](docs/wago-runtime-gaps.md) for the Wago guest-storage requirements that enabled the complete Facet representation model and the remaining design rules that the plugin relies on.
 
 ## License
 
