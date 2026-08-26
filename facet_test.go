@@ -244,4 +244,12 @@ func TestPluginConfigValidation(t *testing.T) {
 	if err := validatePluginConfig(bad); err == nil {
 		t.Fatal("unknown right was accepted")
 	}
+	for _, trailing := range []json.RawMessage{
+		[]byte(`{} {}`),
+		[]byte(`{"maxHandles":8} trailing`),
+	} {
+		if err := validatePluginConfig(trailing); err == nil {
+			t.Fatalf("trailing plugin config content was accepted: %q", trailing)
+		}
+	}
 }

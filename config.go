@@ -92,6 +92,12 @@ func validatePluginConfig(raw json.RawMessage) error {
 	if err := dec.Decode(&cfg); err != nil {
 		return err
 	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("plugin config contains multiple JSON values")
+		}
+		return err
+	}
 	return validatePluginConfigValue(cfg)
 }
 

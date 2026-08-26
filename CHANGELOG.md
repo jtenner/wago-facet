@@ -2,7 +2,7 @@
 
 All notable changes to `wago-facet` are recorded in this file.
 
-## [0.1.0] - 2026-08-26
+## [Unreleased]
 
 ### Added
 
@@ -25,5 +25,3 @@ All notable changes to `wago-facet` are recorded in this file.
 - Guest-controlled runtime allocations have finite limits.
 - Preopen authority is pinned before guest observation.
 - DNS resolution has a finite deadline and plugin-shutdown cancellation.
-
-[0.1.0]: https://github.com/jtenner/wago-facet/releases/tag/v0.1.0

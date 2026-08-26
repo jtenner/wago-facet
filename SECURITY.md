@@ -4,9 +4,9 @@
 
 | Version | Supported |
 | --- | --- |
-| 0.1.x | Yes |
+| `main` (pre-release) | Yes |
 
-`wago-facet` 0.1 is experimental. Security fixes can change implementation details, limits, diagnostics, and external error normalization while preserving the Facet 0.1 ABI and normative behavior.
+No tagged release is currently published. The planned `wago-facet` 0.1 release is experimental. Security fixes can change implementation details, limits, diagnostics, and external error normalization while preserving the Facet 0.1 ABI and normative behavior.
 
 ## Reporting a vulnerability
 

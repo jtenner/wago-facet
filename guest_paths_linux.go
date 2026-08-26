@@ -23,13 +23,6 @@ func (f *fileResource) close() error {
 	return unix.Close(fd)
 }
 
-func (f *fileResource) pollFD() (int, bool) {
-	if f == nil || f.fd < 0 {
-		return 0, false
-	}
-	return f.fd, true
-}
-
 func resolvePathCode(err error) int32 {
 	if err == nil {
 		return ErrOK
