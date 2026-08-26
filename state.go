@@ -317,11 +317,3 @@ func (s *stateStore) closeAll() {
 		state.closeAll()
 	}
 }
-
-func (s *instanceState) debugHandle(id uint32) string {
-	h := s.handles[id]
-	if h == nil {
-		return "<invalid>"
-	}
-	return fmt.Sprintf("kind=%d rights=%#x flags=%#x", h.kind, h.rights, h.flags)
-}

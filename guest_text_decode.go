@@ -203,16 +203,6 @@ func readGuestTextArray(m wago.HostModule, width textWidth, slot uint64, offset,
 	return value, code
 }
 
-func validatePathText(value string) int32 {
-	if strings.IndexByte(value, 0) >= 0 {
-		return ErrInvalid
-	}
-	if value == "" {
-		return ErrInvalid
-	}
-	return ErrOK
-}
-
 func validateDNSName(value string) int32 {
 	if value == "" || len(value) > 253 {
 		return ErrInvalid

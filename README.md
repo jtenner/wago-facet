@@ -8,7 +8,7 @@ This repository follows Facet 0.1.
 
 ## Status
 
-Version 0.1.0 is the experimental reference release for Facet 0.1.
+The planned 0.1.0 release is the experimental reference release for Facet 0.1.
 
 The Runtime plugin path implements the canonical Facet 0.1 import surface. The inventory test requires exactly **261** Facet imports with no duplicate names. Wago's normal registration check verifies scalar ABI categories, and the required instantiation interceptor additionally verifies Facet's structural GC-reference signatures before guest code starts.
 
@@ -82,17 +82,13 @@ See [`tests/conformance/README.md`](tests/conformance/README.md) for the pinned-
 
 ## Installation
 
-The release can be consumed as a Go module:
-
-```sh
-go get github.com/jtenner/wago-facet@v0.1.0
-```
+No versioned release has been published yet. Until 0.1.0 is cut, development consumers should pin a reviewed commit instead of relying on the moving `main` branch.
 
 `Provider()` is the preferred Wago plugin integration.
 
 ## Supported platforms
 
-Version 0.1.0 supports:
+The planned 0.1.0 release supports:
 
 - Linux amd64;
 - Linux arm64.

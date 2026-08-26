@@ -2,7 +2,6 @@ package facet
 
 import (
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -530,5 +529,3 @@ func (p *Plugin) allocatingReadlinkBindings() []binding {
 	}
 	return out
 }
-
-var _ = fmt.Sprintf
