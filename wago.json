@@ -4,7 +4,7 @@
     "module": "github.com/jtenner/wago-facet",
     "version": "0.1.0",
     "name": "Facet",
-    "description": "Facet 0.1 portable system interface for Core WebAssembly on Wago.",
+    "description": "Facet 0.1 portable system interface for Core WebAssembly.",
     "stability": "experimental",
     "license": "MIT",
     "homepage": "https://github.com/jtenner/wago-facet",
