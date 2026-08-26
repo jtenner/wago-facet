@@ -23,6 +23,7 @@ import (
 const (
 	facetSpecDirEnv  = "FACET_SPEC_DIR"
 	facetCaseEnv     = "FACET_CONFORMANCE_CASE"
+	facetGCStressEnv = "FACET_GC_STRESS"
 	facetResultMark  = "FACETRESULT\t"
 	facetCaseTimeout = 30 * time.Second
 )
@@ -108,6 +109,25 @@ type facetPluginPreopen struct {
 
 func facetExecutableKind(kind string) bool {
 	return kind == "wast" || kind == "link"
+}
+
+func facetInstantiateOptions() []wago.InstantiateOption {
+	switch os.Getenv(facetGCStressEnv) {
+	case "":
+		return nil
+	case "moving":
+		return []wago.InstantiateOption{wago.WithGC(wago.GCConfig{
+			StressNurseryBytes:  64,
+			CollectEveryAlloc:   true,
+			VerifyAfterCollect:  true,
+			PoisonFreed:         true,
+			StressBarriers:      true,
+			ThroughputHeapBytes: 16 << 20,
+			ThroughputPageBytes: 64 << 10,
+		})}
+	default:
+		panic("unknown " + facetGCStressEnv + " value")
+	}
 }
 
 func TestFacetConformance(t *testing.T) {
@@ -301,7 +321,7 @@ func executeFacetWAST(t *testing.T, specDir string, test facetCatalogTest) (int,
 		if err != nil {
 			return nil, err
 		}
-		instance, err := rt.Instantiate(context.Background(), module)
+		instance, err := rt.Instantiate(context.Background(), module, facetInstantiateOptions()...)
 		if err != nil {
 			_ = module.Close()
 			return nil, err
@@ -408,7 +428,7 @@ func executeFacetWAST(t *testing.T, specDir string, test facetCatalogTest) (int,
 			if err != nil {
 				return assertions, fmt.Errorf("line %d %s failed during compile: %w", command.Line, command.Type, err)
 			}
-			instance, instantiateErr := rt.Instantiate(context.Background(), module)
+			instance, instantiateErr := rt.Instantiate(context.Background(), module, facetInstantiateOptions()...)
 			if instantiateErr == nil {
 				_ = instance.Close()
 				_ = module.Close()

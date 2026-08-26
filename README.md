@@ -8,7 +8,7 @@ This repository follows Facet 0.1.
 
 ## Status
 
-The plugin is experimental while the Facet 0.1 release branch is reviewed.
+Version 0.1.0 is the experimental reference release for Facet 0.1.
 
 The Runtime plugin path implements the canonical Facet 0.1 import surface. The inventory test requires exactly **261** Facet imports with no duplicate names. Wago's normal registration check verifies scalar ABI categories, and the required instantiation interceptor additionally verifies Facet's structural GC-reference signatures before guest code starts.
 
@@ -65,6 +65,8 @@ The current gate is:
 0 timeouts
 ```
 
+CI runs the complete gate with the default collector. It also reruns all 137 standard WAST cases with forced moving-nursery collection on every GC allocation. A differential integration test compares the same argument transfer through Memory32, Memory64, and a Wasm GC array.
+
 Each standard WAST file runs in an isolated subprocess. A runtime crash or timeout is therefore reported as a conformance failure instead of terminating the complete test run.
 
 The six harness tests cover behavior outside standard WAST command composition:
@@ -77,6 +79,25 @@ The six harness tests cover behavior outside standard WAST command composition:
 - UDP loopback interaction.
 
 See [`tests/conformance/README.md`](tests/conformance/README.md) for the pinned-suite and local-run instructions.
+
+## Installation
+
+The release can be consumed as a Go module:
+
+```sh
+go get github.com/jtenner/wago-facet@v0.1.0
+```
+
+`Provider()` is the preferred Wago plugin integration.
+
+## Supported platforms
+
+Version 0.1.0 supports:
+
+- Linux amd64;
+- Linux arm64.
+
+The package intentionally uses Linux capability-beneath filesystem operations, polling, and socket primitives. It is not currently a portable Darwin or Windows implementation. Unsupported operating systems are outside the advertised compatibility contract for this release.
 
 ## Plugin configuration
 
@@ -141,8 +162,11 @@ Run the normal Go checks with:
 
 ```sh
 go test ./...
+go test -race ./...
 go vet ./...
 ```
+
+The ordinary test suite includes seed corpora for text-codec and plugin-configuration fuzz targets. CI also verifies Go 1.22 compatibility.
 
 Run the complete Facet 0.1 conformance gate with the pinned suite as described in [`tests/conformance/README.md`](tests/conformance/README.md).
 
