@@ -1,0 +1,161 @@
+{
+  "$schema": "https://wago.sh/v1/providers.schema.json",
+  "providers": [
+    {
+      "importPath": "github.com/jtenner/wago-facet/register",
+      "definition": {
+        "id": "github.com/jtenner/wago-facet",
+        "name": "Facet",
+        "version": "0.1.0",
+        "description": "Facet 0.1 portable system interface for Core WebAssembly.",
+        "stability": "experimental",
+        "compatibility": {
+          "engines": {
+            "go": "\u003e=1.22",
+            "wago": "\u003e=0.1.0"
+          },
+          "platforms": [
+            "linux/amd64",
+            "linux/arm64"
+          ]
+        },
+        "provenance": {
+          "homepage": "https://github.com/jtenner/wago-facet",
+          "repository": "https://github.com/jtenner/wago-facet",
+          "license": "MIT",
+          "authors": [
+            "Joshua Tenner"
+          ]
+        },
+        "authorities": [
+          {
+            "name": "host.arguments.read",
+            "mode": "required",
+            "reason": "expose the runtime-scoped guest argument vector through Facet",
+            "scope": {}
+          },
+          {
+            "name": "host.caller.identify",
+            "mode": "required",
+            "reason": "isolate opaque Facet resource handles by guest instance",
+            "scope": {}
+          },
+          {
+            "name": "host.import.define",
+            "mode": "required",
+            "reason": "define the Facet Core WebAssembly import module",
+            "scope": {
+              "modules": [
+                "facet"
+              ]
+            }
+          },
+          {
+            "name": "instance.close.observe",
+            "mode": "required",
+            "reason": "release Facet resources when their guest instance closes",
+            "scope": {}
+          },
+          {
+            "name": "instance.instantiate.intercept",
+            "mode": "required",
+            "reason": "validate exact structural Facet GC-reference signatures and caller-selected array result storage before instantiation",
+            "scope": {}
+          }
+        ],
+        "configSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "env": {
+              "items": {
+                "maxLength": 32768,
+                "minLength": 2,
+                "pattern": "^[^=\\u0000]+=[^\\u0000]*$",
+                "type": "string"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            },
+            "maxHandles": {
+              "maximum": 65536,
+              "minimum": 8,
+              "type": "integer"
+            },
+            "preopens": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "guest": {
+                    "maxLength": 4096,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000]+$",
+                    "type": "string"
+                  },
+                  "host": {
+                    "maxLength": 4096,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "rights": {
+                    "items": {
+                      "enum": [
+                        "read",
+                        "write",
+                        "seek",
+                        "tell",
+                        "stat",
+                        "set-size",
+                        "sync",
+                        "path-open",
+                        "path-create",
+                        "path-remove",
+                        "path-rename",
+                        "path-link",
+                        "path-symlink",
+                        "path-readlink",
+                        "dir-iterate"
+                      ],
+                      "type": "string"
+                    },
+                    "type": "array",
+                    "uniqueItems": true
+                  }
+                },
+                "required": [
+                  "guest",
+                  "host"
+                ],
+                "type": "object"
+              },
+              "maxItems": 64,
+              "type": "array"
+            },
+            "stderr": {
+              "enum": [
+                "inherit",
+                "discard"
+              ],
+              "type": "string"
+            },
+            "stdin": {
+              "enum": [
+                "inherit",
+                "eof"
+              ],
+              "type": "string"
+            },
+            "stdout": {
+              "enum": [
+                "inherit",
+                "discard"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "definitionDigest": "sha256:699910c429ed36fddcd3220a46b241c0a3590c40d68c3cde8221652d7525b80a"
+    }
+  ]
+}
