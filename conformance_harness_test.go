@@ -252,7 +252,7 @@ func newFacetHarnessRuntime(t *testing.T, specDir string, test facetCatalogTest)
 			h.close()
 			return nil, facetHarnessManifest{}, "", fmt.Errorf("compile module line %d: %w", command.Line, err)
 		}
-		instance, err := rt.Instantiate(context.Background(), module)
+		instance, err := rt.Instantiate(context.Background(), module, facetInstantiateOptions()...)
 		if err != nil {
 			_ = module.Close()
 			h.close()

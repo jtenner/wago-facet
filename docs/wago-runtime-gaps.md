@@ -103,6 +103,8 @@ The plugin still fails closed against indefinite resolver blocking:
 
 A future Wago host-call context surface can tighten this so cancellation of the active guest invocation immediately cancels the corresponding DNS lookup. Until then, the finite deadline and lifecycle cancellation are the supported boundary; the plugin does not retain an unbounded `context.Background()` resolver operation.
 
+This work is tracked by [Wago issue #499](https://github.com/wago-org/wago/issues/499) and [`wago-facet` issue #5](https://github.com/jtenner/wago-facet/issues/5).
+
 ## GC host-call boundary
 
 A declarative plugin import that transfers a collector object is a real GC boundary even when the module contains no ordinary Wasm GC allocation instruction.
@@ -122,6 +124,8 @@ This keeps the public `HostFuncRef` model strict. A declarative plugin `HostFunc
 Facet instance state uses one mutex to protect its handle table and mutable resource metadata. Some host operations may block after resolving that state. The current integration relies on Wago's per-instance public-call serialization and callback-scoped caller identity so unrelated public invocations cannot concurrently execute the same Facet instance state.
 
 If Wago later permits independent concurrent guest activations of the same instance, `wago-facet` must split handle-table synchronization from blocking descriptor and network operations before enabling that execution mode. This assumption is an explicit runtime contract, not an accidental data-race defense.
+
+The required synchronization redesign is tracked by [`wago-facet` issue #6](https://github.com/jtenner/wago-facet/issues/6).
 
 ## Conformance evidence
 

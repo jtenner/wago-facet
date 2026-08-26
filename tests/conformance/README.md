@@ -17,6 +17,8 @@ The pin is stored in [`FACET_SPEC_REVISION`](FACET_SPEC_REVISION). CI checks out
 
 The standard runner is `TestFacetConformance` in the repository root. Each executable WAST case runs in an isolated subprocess with a timeout. A runtime crash or hang is therefore a test failure that does not hide the remaining cases.
 
+CI reruns all standard WAST cases with Wago's moving nursery forced to collect on every GC allocation. `TestArgumentRepresentationsAreDifferentiallyEquivalent` also compares one deterministic argument transfer through Memory32, Memory64, and a Wasm GC array.
+
 The harness runner is `TestFacetHarness`. It implements the six catalog cases that need operations outside standard WAST command composition:
 
 - cross-instance handle isolation;
@@ -28,11 +30,11 @@ The harness runner is `TestFacetHarness`. It implements the six catalog cases th
 
 ## Requirements
 
-The runner currently targets Linux/amd64.
+The runner targets Linux/amd64 and Linux/arm64.
 
 Install:
 
-- Go 1.23 or a compatible version for this module;
+- Go 1.22 or a compatible later version for this module;
 - `wasm-tools` 1.256.0.
 
 CI uses the pinned `wasm-tools` 1.256.0 release artifact and verifies its SHA-256 checksum before execution.
@@ -54,7 +56,21 @@ FACET_SPEC_DIR=/tmp/facet-spec \
   go test -count=1 -run '^(TestFacetConformance|TestFacetHarness)$' -v .
 ```
 
-A successful run includes:
+Run the standard WAST cases under forced moving-GC stress with:
+
+```sh
+FACET_SPEC_DIR=/tmp/facet-spec \
+FACET_GC_STRESS=moving \
+  go test -count=1 -run '^TestFacetConformance$' -v .
+```
+
+Run the cross-representation integration test with:
+
+```sh
+go test -count=1 -run '^TestArgumentRepresentationsAreDifferentiallyEquivalent$' -v .
+```
+
+A successful complete run includes:
 
 ```text
 Facet 0.1 harness: pass=6 fail=0 crash=0 timeout=0 total=6
